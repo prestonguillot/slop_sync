@@ -108,23 +108,4 @@ if command -q fnm
     fnm env --use-on-cd | source
 end
 
-# Nag if `wrangle` hasn't run in > 7 days (catches drifted dotfiles + brew state).
-if status is-interactive
-    set -l _stamp ~/.cache/dotfiles/last-wrangle
-    set -l _max_age 604800  # 7 days
-    if not test -f $_stamp
-        echo "⚠  wrangle has never run on this machine — run it to baseline dotfile + brew tracking."
-    else
-        set -l _age (math (date +%s) - (stat -f '%m' $_stamp))
-        if test $_age -gt $_max_age
-            echo "⚠  wrangle last ran "(math --scale=0 $_age / 86400)" days ago — run it to check for drift."
-        end
-    end
-end
-
-# Nag if wrangle made changes the user hasn't pushed yet. Dismissable.
-if status is-interactive; and test -z "$WRANGLE_NO_PUSH_NAG"
-    if test -f ~/.cache/dotfiles/unpushed
-        echo "⚠  dotfiles repo has unpushed commits. Push when ready (or set WRANGLE_NO_PUSH_NAG=1 to silence)."
-    end
-end
+# (staleness + unpushed nags live in conf.d/wrangle_integration.fish — framework-owned)

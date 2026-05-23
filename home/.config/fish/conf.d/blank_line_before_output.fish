@@ -1,6 +1,7 @@
 # Print a blank line just before each command's output, separating the typed
-# command line from the output it produces. Counterpart to the `echo` at the
-# top of fish_prompt (which separates output from the next prompt).
+# command line from the output it produces. Orthogonal to tide's
+# `tide_prompt_add_newline_before` (which separates output from the NEXT
+# prompt) — this hook separates the typed command from its OWN output.
 #
 # Skipped on bare Enter (no command), and inside non-interactive shells.
 
