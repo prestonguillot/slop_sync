@@ -83,6 +83,8 @@ wrangle sync --no-branch-switch        # stay on current branch (skip the chain-
 wrangle pull                           # just walk the parent chain (fetch + cascade-merge), exit
 wrangle pull --resume                  # continue a cascade interrupted by a merge conflict
 
+wrangle push                           # push current branch (preview, no prompt), exit
+
 wrangle review-docs                    # invoke claude on current state (no drift required)
 wrangle import-univ-vars               # restore captured plugin universals on a new machine
 wrangle set-parent <branch>            # declare current branch's wrangle-parent
@@ -92,13 +94,13 @@ wrangle help                           # subcommand list + env vars + config key
 wrangle help <subcommand>              # detailed help for one subcommand
 ```
 
-The repo nags you in three ways from new shells. All are silenceable per-shell or globally via env var:
+The repo nags you in three ways from new shells. All are colorized and prefixed with `wrangle:` so it's obvious where they come from, and each suggests a concrete subcommand to fix the situation:
 
-- **Staleness nag** — fires if `wrangle` hasn't run in > 7 days. Silence with `WRANGLE_NO_STALENESS_NAG=1`.
-- **Unpushed nag** — fires if you have unpushed commits on the current branch. Silence with `WRANGLE_NO_PUSH_NAG=1`.
-- **Pull nag** — fires if any chain-edge has new upstream commits since you last nagged. Silence with `WRANGLE_NO_PULL_NAG=1`.
+- **Staleness nag** — fires once per shell if `wrangle` hasn't run in > 7 days. Suggests `wrangle sync`.
+- **Unpushed nag** — fires once per shell if the current branch has unpushed commits. Suggests `wrangle push`.
+- **Pull nag** — fires when any chain-edge has new upstream commits, but **self-suppresses** for already-seen upstream SHAs (so you're not nagged twice about the same commits). Suggests `wrangle pull`.
 
-Set any of these in your `config.fish` to mute permanently.
+All three are silenceable via env var (`WRANGLE_NO_STALENESS_NAG=1`, `WRANGLE_NO_PUSH_NAG=1`, `WRANGLE_NO_PULL_NAG=1`) but the nags themselves don't advertise this — they're designed to fire only when they have something new to say.
 
 ---
 

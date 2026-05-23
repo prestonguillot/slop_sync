@@ -2,9 +2,13 @@
 #
 # Stowed from the dotfiles repo. Provides four things:
 #   1. <repo>/scripts/ on $PATH (so `wrangle` and friends are callable)
-#   2. Staleness nag if `wrangle` hasn't run in > 7 days (silence with WRANGLE_NO_STALENESS_NAG=1)
-#   3. Unpushed-commits nag (silence with WRANGLE_NO_PUSH_NAG=1)
-#   4. Pull-nag if any chain-edge has new upstream commits (silence with WRANGLE_NO_PULL_NAG=1)
+#   2. Staleness nag if `wrangle` hasn't run in > 7 days
+#   3. Unpushed-commits nag (per-shell while you have unpushed commits)
+#   4. Pull-nag if any chain-edge has new upstream commits (once per unique upstream SHA)
+#
+# Silencer env vars exist (see README) but are deliberately NOT advertised in
+# the nag text — the nags are designed to fire only when they have something
+# new to say, so silencing is a niche customization, not a daily-driver knob.
 #
 # To remove cleanly: `cd <repo> && stow -t ~ -D home`, or just delete the symlink.
 
@@ -14,36 +18,49 @@ if test -d $_dotfiles_repo/scripts
     set -x PATH $PATH $_dotfiles_repo/scripts
 end
 
+# ── Nag-styling helpers ───────────────────────────────────────────────────
+# Mini palette mirroring wrangle's own (palette lives in scripts/wrangle but
+# this file can't source it — runs in every shell, including non-interactive).
+function __wrangle_nag_tag    ; printf '%s%swrangle:%s' (set_color yellow) (set_color --bold) (set_color normal); end
+function __wrangle_nag_name   ; printf '%s%s%s' (set_color cyan) "$argv" (set_color normal); end
+function __wrangle_nag_count  ; printf '%s%s%s' (set_color --bold) "$argv" (set_color normal); end
+function __wrangle_nag_action ; printf '%s%s%s' (set_color brblack) "$argv" (set_color normal); end
+
+# ── Staleness nag ─────────────────────────────────────────────────────────
 if status is-interactive; and test -z "$WRANGLE_NO_STALENESS_NAG"
     set -l _stamp ~/.cache/dotfiles/last-wrangle
     set -l _max_age 604800
     if not test -f $_stamp
-        echo "⚠  wrangle has never run on this machine — run it to baseline dotfile + brew tracking. Silence with WRANGLE_NO_STALENESS_NAG=1."
+        echo (__wrangle_nag_tag)" never run on this machine. Run "(__wrangle_nag_action 'wrangle sync')" to baseline."
     else
         set -l _age (math (date +%s) - (stat -f '%m' $_stamp))
         if test $_age -gt $_max_age
-            echo "⚠  wrangle last ran "(math --scale=0 $_age / 86400)" days ago — run it to check for drift. Silence with WRANGLE_NO_STALENESS_NAG=1."
+            set -l _days (math --scale=0 $_age / 86400)
+            echo (__wrangle_nag_tag)" last ran "(__wrangle_nag_count "$_days days")" ago. Run "(__wrangle_nag_action 'wrangle sync')" to check for drift."
         end
     end
 end
 
-# Unpushed-commits nag. Asks git directly so it stays accurate even if you
-# push outside wrangle (manual `git push`, push from another machine, etc.).
+# ── Unpushed-commits nag ──────────────────────────────────────────────────
+# Asks git directly so it stays accurate even if you pushed outside wrangle.
 # Quiet if no upstream is configured or repo is in a weird state.
 if status is-interactive; and test -z "$WRANGLE_NO_PUSH_NAG"; and test -d $_dotfiles_repo/.git
     set -l _ahead (command git -C $_dotfiles_repo rev-list --count '@{u}..HEAD' 2>/dev/null)
     if test -n "$_ahead"; and test $_ahead -gt 0
-        echo "⚠  dotfiles repo has $_ahead unpushed commit(s). Push when ready (or set WRANGLE_NO_PUSH_NAG=1 to silence)."
+        set -l _branch (command git -C $_dotfiles_repo rev-parse --abbrev-ref HEAD 2>/dev/null)
+        echo (__wrangle_nag_tag)" "(__wrangle_nag_count "$_ahead")" unpushed commit(s) on "(__wrangle_nag_name $_branch)". Run "(__wrangle_nag_action 'wrangle push')"."
     end
 end
 
-# Pull-nag: walks the parent chain (per git config) and reports any edge
-# with unpulled upstream commits. Reads last-fetched state — does NOT fetch
-# (would slow every shell start). Wrangle fetches at the start of every run,
-# so the nag tracks how stale things are between runs.
+# ── Pull-nag ──────────────────────────────────────────────────────────────
+# Walks the parent chain (per git config) and reports any edge with unpulled
+# upstream commits. Reads last-fetched state — does NOT fetch (would slow
+# every shell start). Wrangle fetches at the start of every sync run, so the
+# nag tracks how stale things are between runs.
 #
-# Only nags once per unique upstream SHA — cached at ~/.cache/dotfiles/pull-nag-state.
-# When new commits arrive upstream (SHA changes), nags again.
+# Only nags once per unique upstream SHA (cached at ~/.cache/dotfiles/pull-nag-state).
+# When new commits arrive upstream, nags again. By design, the silencer env
+# var is rarely needed — the nag self-suppresses for already-seen news.
 if status is-interactive; and test -z "$WRANGLE_NO_PULL_NAG"; and test -d $_dotfiles_repo/.git
     # Determine the chain by walking branch.<X>.wrangle-parent in git config.
     set -l _mb (command git -C $_dotfiles_repo config wrangle.machine-branch 2>/dev/null)
@@ -80,17 +97,19 @@ if status is-interactive; and test -z "$WRANGLE_NO_PULL_NAG"; and test -d $_dotf
             if test "$_cached" = "$_sha"
                 continue   # already nagged about this SHA, skip
             end
-            set _lines $_lines "    $_parent → $_child: $_ahead new commit(s)"
+            # Format: "  main → personal: 1 commit"
+            set -l _commit_word commit
+            test $_ahead -gt 1; and set _commit_word commit(s)
+            set _lines $_lines "  "(__wrangle_nag_name $_parent)" → "(__wrangle_nag_name $_child)": "(__wrangle_nag_count "$_ahead")" $_commit_word"
             set _need_update yes
         end
     end
 
     if test (count $_lines) -gt 0
-        echo "⚠  upstream changes pending — run \`wrangle --pull\`:"
+        echo (__wrangle_nag_tag)" upstream changes pending. Run "(__wrangle_nag_action 'wrangle pull')"."
         for _l in $_lines
             echo "$_l"
         end
-        echo "   (silence with WRANGLE_NO_PULL_NAG=1)"
     end
 
     # Update the nag cache with current SHAs (whether we nagged or not, so

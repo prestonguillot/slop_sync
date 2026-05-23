@@ -120,3 +120,21 @@ set -l setp_out ($wrangle set-parent 2>&1)
 
 string match -q "*expects exactly one argument*" -- "$setp_out"
 @test "set-parent with no args prints usage" $status -eq 0
+
+# ─── push subcommand surface ────────────────────────────────────────────
+
+string match -q "*push*" -- "$top_help"
+@test "top-level help lists push subcommand" $status -eq 0
+
+set -l push_help ($wrangle push --help)
+string match -q "*Push the current branch to origin*" -- "$push_help"
+@test "push --help describes what push does" $status -eq 0
+
+# push doesn't take any flags besides --help.
+$wrangle push --dry-run 2>/dev/null
+@test "push rejects --dry-run (sync-only flag)" $status -ne 0
+
+# Backtick-rendering test for push help.
+set -l push_help_str ($wrangle push --help | string join \n)
+not string match -q '*\\`*' -- "$push_help_str"
+@test "push help has no literal backslash-backticks" $status -eq 0

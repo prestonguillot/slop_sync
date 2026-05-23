@@ -127,6 +127,8 @@ wrangle sync --no-branch-switch        # don't auto-switch to machine-branch, st
 wrangle pull                           # just walk the parent chain (fetch + cascade-merge), exit
 wrangle pull --resume                  # continue a cascade interrupted by a merge conflict
 
+wrangle push                           # push current branch (preview, no prompt), exit
+
 wrangle review-docs                    # skip drift; have claude review docs against recent commits
 wrangle import-univ-vars               # source home/.config/fish/exported-univ-vars.fish, exit
 wrangle set-parent <branch>            # write branch.<current>.wrangle-parent in git config
@@ -223,7 +225,7 @@ Per-clone (in `.git/config`):
 
 | File | Purpose | How to disable |
 |---|---|---|
-| `wrangle_integration.fish` | Three things on every shell start: (a) adds `<repo>/scripts/` to `$PATH` so `wrangle` and friends are callable; (b) staleness nag if wrangle hasn't run in > 7 days; (c) unpushed-commits nag; (d) pull-nag if any chain-edge has new upstream commits. | Per-nag: set the corresponding `WRANGLE_NO_*_NAG=1` env var. To remove entirely: `rm ~/.config/fish/conf.d/wrangle_integration.fish` (will be re-created next bootstrap; or `wrangle [i]gnore`-it). |
+| `wrangle_integration.fish` | Four things on every shell start: (a) adds `<repo>/scripts/` to `$PATH` so `wrangle` and friends are callable; (b) staleness nag if wrangle hasn't run in > 7 days (suggests `wrangle sync`); (c) unpushed-commits nag (suggests `wrangle push`); (d) pull-nag if any chain-edge has new upstream commits (suggests `wrangle pull`). All nags are colorized and prefixed with `wrangle:` so it's obvious where they come from. The pull-nag self-suppresses for already-seen upstream SHAs (only re-fires on genuinely new commits). | Per-nag: set the corresponding `WRANGLE_NO_*_NAG=1` env var (deliberately not advertised in the nag text). To remove entirely: `rm ~/.config/fish/conf.d/wrangle_integration.fish` (will be re-created next bootstrap; or `wrangle [i]gnore`-it). |
 | `blank_line_before_output.fish` | `fish_preexec` hook that prints a blank line between your typed command and its output. | `rm ~/.config/fish/conf.d/blank_line_before_output.fish` (it's on the personal branch, so this is a wrangle `[y]oink` candidate). |
 
 ## Releasing framework updates (for repo maintainers)
