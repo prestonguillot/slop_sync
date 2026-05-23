@@ -1,28 +1,78 @@
-# Paths (relative to $HOME) that `wrangle` should never ask about.
-# One path per line. Lines starting with # are comments.
+# wrangle's dotfile-pass skiplist. Paths under ~ that wrangle won't ask about.
 #
-# Note: scripts/wrangle has a built-in skiplist covering the entries below
-# PLUS common noise (.DS_Store, caches, history files). This file is your
-# personal layer on top — add things specific to your taste.
+# Each non-comment line is either:
+#   - An exact path or directory prefix (e.g., `.aws` matches `.aws` itself
+#     and anything beneath `.aws/`).
+#   - A fish-style glob (any line containing `*`, `?`, or `[`) matched against
+#     both the basename and the full relative path (e.g., `*.pem` skips
+#     `id_thing.pem` and `.config/foo/bar.pem`).
 #
-# The defaults below duplicate the most important built-in skips so they're
-# auditable in git history. You can delete any line; the built-in will still
-# protect you (unless you run `wrangle --force`, which bypasses THIS file but
-# still respects the built-in skiplist).
+# `#` comments are stripped (trailing comments OK).
+# `wrangle sync --force` bypasses this file ENTIRELY — including the credential
+# entries below. The pre-commit secret-scan still runs in --force mode and
+# will refuse to commit AWS/GitHub/Stripe/OpenAI/Anthropic keys, JWTs, and
+# PEM/SSH/PGP blocks unless you ALSO set WRANGLE_ALLOW_SECRETS=1.
 
 # ─── Credential / token stores ───────────────────────────────────────────
 .aws                    # AWS CLI credentials
 .azure                  # Azure CLI session
 .gcloud                 # gcloud auth
 .kube                   # kubeconfig with cluster credentials
+.kuberlr                # kuberlr's kubectl version cache
 .netrc                  # machine login credentials (curl, etc.)
 .npmrc                  # npm auth tokens
+.npmrc-state            # npm registry state
 .pgpass                 # postgres passwords
 .password-store         # password-store (pass) entries
 .credentials            # generic credential dumps
 .my.cnf                 # mysql client credentials
+.gnupg                  # GPG keyring
+.ssh                    # SSH keys + known_hosts
 .config/gh              # gh CLI: hosts.yml carries the GitHub OAuth token
 .config/op              # 1Password CLI session
 .config/gcloud          # gcloud auth (XDG-style)
 .config/azure           # azure CLI (XDG-style)
 .config/kubernetes      # kubeconfig (XDG-style)
+
+# ─── Key files (glob-matched against basename + full path) ───────────────
+*.pem                   # generic PEM-encoded keys/certs
+*.p12                   # PKCS#12 keystore
+*.pfx                   # Personal Information Exchange (Windows-style)
+*.kdbx                  # KeePass database
+*_rsa                   # SSH RSA private keys (id_rsa, foo_rsa)
+*_rsa.pub               # SSH RSA public keys
+*_ed25519               # SSH Ed25519 private keys
+*_ed25519.pub           # SSH Ed25519 public keys
+id_*                    # SSH keys via the conventional naming
+
+# ─── Macros for app state nobody syncs ───────────────────────────────────
+.claude                 # Claude Code per-machine state
+.claude.json            # Claude Code per-machine config
+
+# ─── OS / shell noise ────────────────────────────────────────────────────
+.DS_Store               # macOS Finder droppings
+.CFUserTextEncoding     # macOS user-encoding marker
+.Trash                  # macOS Trash
+.hushlogin              # shell-startup MOTD marker
+.cache                  # generic cache dir (apps' caches live here)
+.local                  # generic local-state dir (apps' state lives here)
+.viminfo                # vim shell command history
+.lesshst                # less search/edit history
+.bash_history           # bash command history
+.zsh_history            # zsh command history
+.zsh_sessions           # zsh per-session state
+
+# ─── Tool caches / state that shouldn't be synced ────────────────────────
+.npm                    # npm install cache
+.docker                 # docker auth + per-machine config
+.rd                     # Rancher Desktop per-machine state
+.rustup                 # rustup toolchain installs
+.tldrc                  # tldr's offline page cache
+
+# ─── Editor/backup file globs ────────────────────────────────────────────
+.zcompdump*             # zsh completion cache
+*.bak                   # plain backup
+*.bak.*                 # timestamped backups
+*.swp                   # vim swap
+*.swo                   # vim swap (alternate)
+.netrwhist              # vim netrw history

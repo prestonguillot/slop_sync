@@ -1,5 +1,5 @@
 #!/usr/bin/env fish
-# wrangle — the sync command for this dotfiles repo.
+# wrangle — the sync command. See README.md for the full picture.
 #
 # Branch model: each machine has its own branch (the "machine-branch") that
 # declares a parent via git config (`branch.<name>.wrangle-parent`). The
@@ -1164,36 +1164,36 @@ else
     echo "$GLYPH_WARN  stow not installed; skipping re-stow."
 end
 
-# ─── Builtin skiplist + user ignores ──────────────────────────────────────
-set -l builtin_skips \
-    .DS_Store .CFUserTextEncoding .Trash .cache .npm .docker .gnupg .ssh \
-    .kuberlr .rd .rustup .local .tldrc .viminfo .lesshst .bash_history \
-    .zsh_history .zsh_sessions .claude .claude.json .npmrc-state .hushlogin \
-    \
-    .aws .azure .gcloud .kube .config/gh .config/op .config/azure \
-    .config/gcloud .config/kubernetes .netrc .npmrc .pgpass .password-store \
-    .credentials .my.cnf
-
-set -l builtin_skip_globs \
-    '.zcompdump*' '*.bak' '*.bak.*' '*.swp' '*.swo' '.netrwhist' \
-    '*.pem' '*.p12' '*.pfx' '*.kdbx' \
-    '*_rsa' '*_rsa.pub' '*_ed25519' '*_ed25519.pub' 'id_*'
-
+# ─── Skiplist (sole source: .dotignore) ──────────────────────────────────
+# Each non-blank, non-comment line is either:
+#   - A fish-style glob (contains *, ?, or [) — matched against basename
+#     OR full relative path.
+#   - An exact path or directory prefix — matches the path itself or
+#     anything beneath it.
+# Trailing comments and whitespace are stripped.
+# `--force` bypasses this file entirely (intentional: pre-commit secret-scan
+# is the secondary safety net).
 set -l user_ignores
 if test -f $ignore_file; and test "$_force" = no
-    set user_ignores (cat $ignore_file | grep -v '^#' | grep -v '^$')
+    set user_ignores (sed -E 's/[[:space:]]*#.*$//' $ignore_file \
+        | sed -E 's/[[:space:]]+$//' \
+        | grep -v '^[[:space:]]*$')
 end
 
-function _is_skipped --inherit-variable builtin_skips --inherit-variable builtin_skip_globs --inherit-variable user_ignores
+function _is_skipped --inherit-variable user_ignores
     set -l rel $argv[1]
-    for s in $builtin_skips $user_ignores
-        if test "$rel" = "$s"; or string match -q -- "$s/*" $rel
-            return 0
-        end
-    end
-    for g in $builtin_skip_globs
-        if string match -q -- $g (basename $rel); or string match -q -- $g $rel
-            return 0
+    for s in $user_ignores
+        # Glob entries (contain *, ?, or [) → fish-glob match against basename
+        # or full path.
+        if string match -qr '[*?\[]' -- $s
+            if string match -q -- $s (basename $rel); or string match -q -- $s $rel
+                return 0
+            end
+        else
+            # Exact path or directory prefix.
+            if test "$rel" = "$s"; or string match -q -- "$s/*" $rel
+                return 0
+            end
         end
     end
     return 1
@@ -1932,7 +1932,7 @@ if test "$_dry_run" = no; and test "$_committed" = yes; and test "$_claude_opt" 
         _header "Doc sync"
 
         # Build context: changes from this run + any pending from prior runs.
-        set -l prompt_text "You are claude-code invoked by `wrangle` (the dotfiles repo's sync command) at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
+        set -l prompt_text "You are claude-code invoked by `wrangle` at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
 
 The repo has two documentation tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
