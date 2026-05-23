@@ -899,7 +899,9 @@ if test "$_dry_run" = no
                 set -a members $name
             end
             set -l count (count $members)
-            set -l sample (string join ", " $members[1..(math min 3 $count)])
+            set -l show $count
+            test $show -gt 3; and set show 3
+            set -l sample (string join ", " $members[1..$show])
             test $count -gt 3; and set sample "$sample, …"
             echo ""
             echo "    prefix \`$prefix*\` — $count var(s): $sample"
