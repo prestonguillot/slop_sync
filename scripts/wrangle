@@ -14,7 +14,10 @@
 #    5. Commit            — secret-scan staged diff, commit with auto/llm message
 #    6. Doc sync (opt-in) — claude reviews + edits .md files; commits separately
 #    7. Push              — preview unpushed commits + stat; [y/N/d=diff] prompt
-#    8. First-run opt-in  — on the very first run, ask about claude integration
+#
+# The first-run "do you want claude doc-review?" opt-in question is asked
+# UP FRONT (after the welcome banner, before drift detection) so the answer
+# applies to this run's doc-sync, not just future runs.
 #
 # Prompts use consistent letters:
 #   [t]rack          — capture into the repo
@@ -209,27 +212,16 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
         --model $model --effort $effort --session-id $session_id "$argv[1]"
 end
 
-# Determine effective claude opt-in once — used by Pass 5 (commit message) AND
-# Pass 6 (doc review). Computed early so both can read $_claude_opt.
-#   --suppress-claude       → off (overrides file)
-#   --with-claude           → on (overrides file)
-#   WRANGLE_CLAUDE_OPT_IN=yes in $config_file → on
-#   else → off
-set -g _claude_opt off
-if test -f $config_file
-    if grep -q 'WRANGLE_CLAUDE_OPT_IN=yes' $config_file
-        set _claude_opt on
-    end
-end
-set -q _flag_with_claude; and set _claude_opt on
-set -q _flag_suppress_claude; and set _claude_opt off
+# `$_claude_opt` (on/off) is computed later — right after the first-run
+# opt-in question runs (so the just-saved answer is honored this run). Pass 5
+# (commit message) and Pass 6 (doc-sync) both read it.
 
 # Build a commit message. Three paths:
 #   1. Single structural change → use it directly. claude can't improve much.
 #   2. claude opt-in is on (and CLI present) → ask claude to summarize the diff.
 #   3. Fall back to heuristic. For hand-edits (empty $_changes) describes the
 #      file count; for multi-change uses "$first (+N more)".
-function _build_commit_msg --inherit-variable _changes --inherit-variable repo --inherit-variable _claude_opt
+function _build_commit_msg --inherit-variable _changes --inherit-variable repo
     set -l n (count $_changes)
 
     if test $n -eq 1
@@ -409,6 +401,55 @@ if test "$_first_run" = yes; and test "$_dry_run" = no
     echo "  unless you say [t]rack."
     echo ""
 end
+
+# ── Claude opt-in question ───────────────────────────────────────────────
+# Fires the first time wrangle is run *after the opt-in feature exists* —
+# i.e., whenever $config_file is missing. Decoupled from $_first_run (which
+# only catches truly-fresh machines) so existing users get asked the first
+# time they run a wrangle version that knows about the question. Asked HERE
+# (rather than at the end of the run) so the answer applies to THIS run's
+# doc-sync, not just future runs.
+if test "$_dry_run" = no; and not test -f $config_file
+    echo ""
+    echo "$HEAD_OPEN─── One-time question ───$HEAD_CLOSE"
+    echo "  wrangle can optionally use claude-code (the `claude` CLI) after each run"
+    echo "  to review the repo's docs (framework and personal-layer) for changes that"
+    echo "  need reflecting. It runs only when wrangle has actual changes, uses a"
+    echo "  persistent session to avoid re-reading the repo each time, and obeys"
+    echo "  --with-claude / --suppress-claude flags on individual runs."
+    echo ""
+    set -l answer no
+    while true
+        read -P (_prompt)"  Enable claude doc review by default on this machine? [y/N] > "(_rs) choice
+        switch $choice
+            case y Y yes
+                set answer yes
+                break
+            case n N no ''
+                set answer no
+                break
+            case '*'
+                echo "  ? '$choice' — y or n"
+        end
+    end
+    echo "WRANGLE_CLAUDE_OPT_IN=$answer" > $config_file
+    echo "  $GLYPH_OK Saved to $config_file (edit that file to change later)."
+end
+
+# Determine effective claude opt-in for THIS run. Computed here (after the
+# opt-in question) so a first-run "yes" answer takes effect immediately.
+#   --suppress-claude       → off (overrides file)
+#   --with-claude           → on (overrides file)
+#   WRANGLE_CLAUDE_OPT_IN=yes in $config_file → on
+#   else → off
+set -g _claude_opt off
+if test -f $config_file
+    if grep -q 'WRANGLE_CLAUDE_OPT_IN=yes' $config_file
+        set _claude_opt on
+    end
+end
+set -q _flag_with_claude; and set _claude_opt on
+set -q _flag_suppress_claude; and set _claude_opt off
 
 # ─── Pass -1: yoink check ─────────────────────────────────────────────────
 set -l yoink_candidates
@@ -1355,34 +1396,3 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_PUSH"
     popd >/dev/null
 end
 
-# ─── Pass 8: claude opt-in question ──────────────────────────────────────
-# Fires the first time wrangle is run *after the opt-in feature exists* —
-# i.e., whenever the config file is missing. Decoupled from $_first_run
-# (which only catches truly-fresh machines) so existing users get asked
-# the first time they run a wrangle version that knows about the question.
-if test "$_dry_run" = no; and not test -f $config_file
-    echo ""
-    echo "$HEAD_OPEN─── One-time question ───$HEAD_CLOSE"
-    echo "  wrangle can optionally use claude-code (the `claude` CLI) after each run"
-    echo "  to review the repo's docs (framework and personal-layer) for changes that"
-    echo "  need reflecting. It runs only when wrangle has actual changes, uses a"
-    echo "  persistent session to avoid re-reading the repo each time, and obeys"
-    echo "  --with-claude / --suppress-claude flags on individual runs."
-    echo ""
-    set -l answer no
-    while true
-        read -P (_prompt)"  Enable claude doc review by default on this machine? [y/N] > "(_rs) choice
-        switch $choice
-            case y Y yes
-                set answer yes
-                break
-            case n N no ''
-                set answer no
-                break
-            case '*'
-                echo "  ? '$choice' — y or n"
-        end
-    end
-    echo "WRANGLE_CLAUDE_OPT_IN=$answer" > $config_file
-    echo "  $GLYPH_OK Saved to $config_file (edit that file to change later)."
-end
