@@ -182,6 +182,26 @@ function _spinner_stop
     end
 end
 
+# Run a command with a spinner showing $label, swallow stdout into a temp
+# file, on success: re-emit the captured output; on failure: print it under
+# a warning. Returns the wrapped command's exit status. Stderr passes through
+# live so things like sudo password prompts still work.
+#
+# Usage:  _with_spinner "doing thing…" the_command arg1 arg2
+function _with_spinner --argument-names label
+    set -l cmd $argv[2..-1]
+    _spinner_start "$label"
+    set -l out (mktemp)
+    $cmd > $out
+    set -l rv $status
+    _spinner_stop
+    if test -s $out
+        cat $out
+    end
+    rm -f $out
+    return $rv
+end
+
 # Handle --reset-claude-session up front.
 if set -q _flag_reset_claude_session
     rm -f $claude_session_file
@@ -223,6 +243,7 @@ end
 # and .univexport/.univignore edits stay on disk; re-run wrangle to commit.
 function _wrangle_abort --argument-names reason exit_code
     test -z "$exit_code"; and set exit_code 0
+    _spinner_stop   # clear any half-rendered spinner before our message
     echo ""
     echo "  $GLYPH_DIM $reason — exiting without committing or pushing. Re-run wrangle to commit any tracked changes."
     exit $exit_code
@@ -250,12 +271,20 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     echo "  $GLYPH_DIM model=$model · effort=$effort · session="(string sub --start=1 --length=8 -- $session_id)"…"
     echo ""
 
+    # Spinner runs for the full claude duration. The streamed output appears
+    # below the spinner line as it arrives; not pretty but cheap and
+    # unambiguous ("something is happening"). Stopping the spinner on first-
+    # byte requires piping through fish in a way that loses exit status.
     # --permission-mode acceptEdits: auto-approve Edit/Write on the .md files
     # claude is asked to maintain. Bash + WebFetch etc. still require interactive
     # approval, but in -p mode there's no TTY for that prompt, so those fail
     # closed (claude can't shell-out or fetch from this context — intended).
+    _spinner_start "claude thinking… (model=$model effort=$effort)"
     claude -p --output-format text --permission-mode acceptEdits \
         --model $model --effort $effort --session-id $session_id "$argv[1]"
+    set -l rv $status
+    _spinner_stop
+    return $rv
 end
 
 # `$_claude_opt` (on/off) is computed later — right after the first-run
@@ -360,12 +389,12 @@ if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
 
     # Merge framework updates from main (skip if dry-run, no remote, or no main).
     if test "$_dry_run" = no; and git remote | grep -q .
-        _spinner_start "Fetching main…"
-        git fetch origin main 2>/dev/null
-        _spinner_stop
+        _with_spinner "Fetching origin/main…" git fetch origin main 2>/dev/null
         if git rev-parse --verify --quiet origin/main >/dev/null
+            _spinner_start "Merging origin/main into personal…"
             set -l merge_out (git merge --ff-only origin/main 2>&1)
             set -l merge_rv $status
+            _spinner_stop
             if test $merge_rv -ne 0
                 # Non-fast-forward = personal has diverged from main.
                 echo "  $GLYPH_WARN personal has diverged from main; resolve manually with: git merge origin/main"
@@ -604,7 +633,7 @@ end
 if command -q stow
     if test "$_dry_run" = no
         pushd $repo >/dev/null
-        stow --no-folding -R -t ~ home 2>&1
+        _with_spinner "Re-stowing home/ into ~…" stow --no-folding -R -t ~ home
         or begin
             popd >/dev/null
             echo "$GLYPH_ERR stow re-stow failed. Resolve conflicts (real files at target paths) and re-run."
@@ -689,7 +718,7 @@ function _track --inherit-variable home_subdir --inherit-variable repo
         return 1
     end
     pushd $repo >/dev/null
-    stow --no-folding -R -t ~ home 2>&1
+    _with_spinner "Re-stowing after track…" stow --no-folding -R -t ~ home
     set -l rv $status
     popd >/dev/null
     if test $rv -eq 0
@@ -839,7 +868,7 @@ else
                         echo "      $GLYPH_OK added to fish_plugins"
                         break
                     case i I ignore uninstall
-                        fish -c "fisher remove $plugin"
+                        _with_spinner "fisher remove $plugin…" fish -c "fisher remove $plugin"
                         set fish_uninstalled (math $fish_uninstalled + 1)
                         _log_change "uninstalled fisher plugin: $plugin"
                         echo "      $GLYPH_OK uninstalled"
@@ -869,9 +898,10 @@ else
                 read -P (_prompt)"    [i]nstall / [r]emove from fish_plugins / [s]kip / [q]uit > "(_rs) choice
                 switch $choice
                     case i I install
-                        fish -c "fisher install $plugin"
+                        _with_spinner "fisher install $plugin…" fish -c "fisher install $plugin"
                         set fish_installed (math $fish_installed + 1)
                         _log_change "installed fisher plugin: $plugin"
+                        echo "      $GLYPH_OK installed"
                         break
                     case r R remove
                         set -l tmp_p (mktemp)
@@ -1246,20 +1276,28 @@ else
                         set -l type (string split ' ' -- $entry)[1]
                         set -l name (string match -r '"[^"]+"' -- $entry)[1]
                         set -l name_unquoted (string trim --chars='"' -- $name)
+                        set -l rv 0
                         switch $type
                             case brew
-                                brew install $name_unquoted
+                                _with_spinner "brew install $name_unquoted…" brew install $name_unquoted
+                                set rv $status
                             case cask
-                                brew install --cask $name_unquoted
+                                _with_spinner "brew install --cask $name_unquoted…" brew install --cask $name_unquoted
+                                set rv $status
                             case mas
                                 set -l id (string match -r 'id:\s*(\d+)' -- $entry)[2]
-                                mas install $id
+                                _with_spinner "mas install $name_unquoted ($id)…" mas install $id
+                                set rv $status
                             case npm
-                                npm install -g $name_unquoted
+                                _with_spinner "npm install -g $name_unquoted…" npm install -g $name_unquoted
+                                set rv $status
                         end
-                        if test $status -eq 0
+                        if test $rv -eq 0
+                            echo "      $GLYPH_OK installed"
                             set brew_installed (math $brew_installed + 1)
                             _log_change "installed: $entry"
+                        else
+                            echo "      $GLYPH_WARN install failed (exit $rv)"
                         end
                         break
                     case r R remove
@@ -1336,7 +1374,9 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
         git add -A
 
         if test -z "$WRANGLE_ALLOW_SECRETS"
+            _spinner_start "Scanning staged diff for secrets…"
             set -l secret_hits (git diff --cached | $repo/scripts/scan-secrets)
+            _spinner_stop
             if test (count $secret_hits) -gt 0
                 echo ""
                 echo "$GLYPH_ERR SECRET-LIKE PATTERNS in staged diff — refusing to commit:"
@@ -1352,7 +1392,7 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
         end
 
         set -l commit_msg (_build_commit_msg)
-        git commit -m "$commit_msg"
+        _with_spinner "Committing…" git commit -m "$commit_msg"
         set -g _committed yes
         echo "  $GLYPH_OK committed: $commit_msg"
     end
@@ -1424,7 +1464,7 @@ Recent commit history (for context — last 10 commits):
                     echo "  Inspect / clean up with: cd $repo && git status"
                 else
                     git add -A
-                    git commit -m "docs: sync with wrangle run "(date -u +%Y-%m-%dT%H:%MZ) | tail -1
+                    _with_spinner "Committing doc changes…" git commit -m "docs: sync with wrangle run "(date -u +%Y-%m-%dT%H:%MZ)
                     echo "  $GLYPH_OK doc changes committed."
                     _log_change "doc-sync committed by claude"
                 end
