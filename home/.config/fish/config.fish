@@ -1,5 +1,8 @@
-# enabled vim mode, fuck it we ball
-fish_vi_key_bindings
+# enabled vim mode, fuck it we ball.
+# Set the variable instead of calling the function directly so plugins that
+# listen via `--on-variable fish_key_bindings` (e.g. autopair.fish) get
+# notified and register their bindings in vi insert mode.
+set -g fish_key_bindings fish_vi_key_bindings
 
 ######## PATH ########
 
@@ -25,10 +28,15 @@ set -g fish_history_ignore_duplicates yes
 set -g fish_history_ignore_space yes
 set -g history_max_size 2000
 
+# Suppress the `(venvname)` prompt prefix that venv's activate.fish would
+# otherwise inject — tide already renders the active virtualenv on its own.
+set -gx VIRTUAL_ENV_DISABLE_PROMPT 1
+
 ######## Aliases & functions ########
 
 alias cls clear
 alias ll 'eza -la --git --icons'
+alias lla 'eza -la --git --icons -a'
 alias la 'eza -a --icons'
 alias l 'eza --icons'
 alias ls 'eza --icons'
@@ -48,7 +56,7 @@ function lt --description 'eza -T with depth (default 1)'
     end
     eza -T -L $depth --icons $argv
 end
-function lar --description 'eza -aR with depth (default 1)'
+function lra --description 'eza -aR with depth (default 1)'
     set -l depth 1
     if test (count $argv) -gt 0; and string match -qr '^\d+$' -- $argv[1]
         set depth $argv[1]
@@ -56,7 +64,7 @@ function lar --description 'eza -aR with depth (default 1)'
     end
     eza -aR -L $depth --icons $argv
 end
-function lat --description 'eza -aT with depth (default 1)'
+function lta --description 'eza -aT with depth (default 1)'
     set -l depth 1
     if test (count $argv) -gt 0; and string match -qr '^\d+$' -- $argv[1]
         set depth $argv[1]

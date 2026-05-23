@@ -16,3 +16,5 @@
 #     auto-skipped by wrangle's drift pass — you won't be asked about them.
 #     If you ever need to capture one anyway, add its exact name on its own
 #     line here; an explicit allowlist match wins over the auto-skip.
+sponge_*
+tide_*

@@ -19,6 +19,7 @@
 	cleanup-origin = !git branch -r --merged | grep -v master | grep -v develop | sed 's/origin\\///' | xargs -n 1 git push --delete origin
 	cleanup-origin-hard = !git branch -r | grep -v master | grep -v develop | sed 's/origin\\///' | xargs -n 1 git push --delete origin
 	retag = "!f() { git tag -d ${1}; git push origin :refs/tags/${1}; git tag ${1}; git push origin ${1}; }; f"
+	tree = log --graph --oneline --all --decorate
 [merge]
 	tool = kdiff3
 	conflictstyle = zdiff3

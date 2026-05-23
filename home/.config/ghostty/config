@@ -5,6 +5,12 @@ font-family-bold = Monaspace Xenon
 font-family-italic = Monaspace Radon
 font-family-bold-italic = Monaspace Radon
 
+# Fallback for glyphs Monaspace doesn't ship (Nerd Font PUA range — tide
+# prompt icons, eza file-type icons, lazygit/k9s/etc.). Ghostty walks
+# font-family entries in order for missing glyphs. Installed via
+# `brew install --cask font-symbols-only-nerd-font`.
+font-family = Symbols Nerd Font Mono
+
 # Monaspace ligatures & features
 font-feature = calt
 font-feature = liga

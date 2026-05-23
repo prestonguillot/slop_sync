@@ -95,3 +95,4 @@ cask "wireshark-app"
 # Multiplayer code editor
 cask "zed"
 mas "Fantastical", id: 975937182
+cask "font-symbols-only-nerd-font"
