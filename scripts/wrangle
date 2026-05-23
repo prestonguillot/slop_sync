@@ -63,13 +63,19 @@
 #                                           (default: main; empty = root branch with no parent)
 
 # ── Subcommand dispatch ────────────────────────────────────────────────
-# Two-arg shape: `wrangle <subcmd> [<args>...]`. Bare `wrangle` runs `sync`;
-# leading `-flag` is an ergonomic shortcut for `sync <-flag>`.
+# Shape: `wrangle <subcmd> [<args>...]`. Bare `wrangle`, `wrangle -h`, and
+# `wrangle --help` all print the top-level help (matching git's convention).
+# Subcommands must be given explicitly — there's no default-to-sync shorthand.
 set -g _subcmd
 if test (count $argv) -eq 0
-    set _subcmd sync
+    set _subcmd help
+else if test "$argv[1]" = -h; or test "$argv[1]" = --help
+    set _subcmd help
+    set -e argv[1]
 else if string match -q -- '-*' $argv[1]
-    set _subcmd sync
+    echo "wrangle: '$argv[1]' is a flag, not a subcommand." >&2
+    echo "Run `wrangle help` for a list of subcommands." >&2
+    exit 2
 else
     set _subcmd $argv[1]
     set -e argv[1]
@@ -81,7 +87,7 @@ switch $_subcmd
         # known — handled below
     case '*'
         echo "wrangle: unknown subcommand: $_subcmd" >&2
-        echo "Run \`wrangle help\` for a list of subcommands." >&2
+        echo "Run `wrangle help` for a list of subcommands." >&2
         exit 2
 end
 
@@ -96,7 +102,7 @@ or exit 1
 # Per-subcommand flag-validity gate.
 function _wrangle_reject_flag --argument-names subcmd flag
     echo "wrangle $subcmd: unknown option: $flag" >&2
-    echo "Run \`wrangle help $subcmd\` for valid options." >&2
+    echo "Run `wrangle help $subcmd` for valid options." >&2
     exit 2
 end
 switch $_subcmd
@@ -121,10 +127,9 @@ end
 # ── Help printers ─────────────────────────────────────────────────────
 function _wrangle_help_top
     echo "Usage: wrangle <subcommand> [args]"
-    echo "       wrangle                              # shorthand for: wrangle sync"
     echo ""
     echo "Subcommands:"
-    echo "  sync                  detect drift + commit + push (default if no subcommand)"
+    echo "  sync                  detect drift + commit + push (the main workflow)"
     echo "  pull [--resume]       fetch + cascade-merge along the parent chain"
     echo "  review-docs           skip drift; have claude review docs against recent commits"
     echo "  import-univ-vars      restore captured fish universals from exported-univ-vars.fish"
@@ -157,8 +162,6 @@ function _wrangle_help_sync
     echo "Find dotfile + plugin + univ-var + brew drift and (by default) prompt"
     echo "per-item what to do. Commits the result. Optionally pushes."
     echo ""
-    echo "This is the default subcommand — bare \`wrangle\` runs it."
-    echo ""
     echo "Options:"
     echo "  -d, --dry-run         detect drift, change nothing, no commit, no push"
     echo "  -f, --force           re-ask about paths already in .dotignore"
@@ -175,8 +178,8 @@ function _wrangle_help_pull
     echo "the child already has the parent's commits, in which case skip)."
     echo ""
     echo "On merge conflict, stops mid-cascade, prints resolve instructions, and"
-    echo "saves resume state. Resolve manually (\`git add\` + \`git commit\`) then"
-    echo "continue with \`wrangle pull --resume\`."
+    echo "saves resume state. Resolve manually (`git add` + `git commit`) then"
+    echo "continue with `wrangle pull --resume`."
     echo ""
     echo "Options:"
     echo "  --resume    continue a cascade that was interrupted by a merge conflict"
@@ -196,10 +199,10 @@ end
 function _wrangle_help_import_univ_vars
     echo "Usage: wrangle import-univ-vars"
     echo ""
-    echo "Source \`home/.config/fish/exported-univ-vars.fish\` to restore captured"
+    echo "Source `home/.config/fish/exported-univ-vars.fish` to restore captured"
     echo "plugin universal variables (tide, sponge, etc.) on a fresh machine."
     echo "Errors if the file doesn't exist — capture them first by answering"
-    echo "[t]rack on a univ-var prefix during a \`wrangle sync\` session."
+    echo "[t]rack on a univ-var prefix during a `wrangle sync` session."
 end
 
 function _wrangle_help_set_parent
@@ -207,9 +210,9 @@ function _wrangle_help_set_parent
     echo ""
     echo "Declare <branch> as the wrangle-parent of the current branch. Writes"
     echo "branch.<current>.wrangle-parent to git config (per-clone). Used by"
-    echo "\`wrangle pull\` to determine where the cascade merges from."
+    echo "`wrangle pull` to determine where the cascade merges from."
     echo ""
-    echo "Refuses to run if the current branch is \`main\` (main is always the root)."
+    echo "Refuses to run if the current branch is `main` (main is always the root)."
 end
 
 function _wrangle_help_reset_claude_session
@@ -697,7 +700,7 @@ if test "$_subcmd" = import-univ-vars
     set -l export_file $repo/home/.config/fish/exported-univ-vars.fish
     if not test -f $export_file
         echo "$GLYPH_ERR No exported-univ-vars.fish found at $export_file." >&2
-        echo "  Capture them first by running \`wrangle sync\` and answering [t]rack on a univ-var prefix." >&2
+        echo "  Capture them first by running `wrangle sync` and answering [t]rack on a univ-var prefix." >&2
         exit 1
     end
     _header "Importing universal variables"
