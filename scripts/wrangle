@@ -2,15 +2,18 @@
 # wrangle — the sync command for this dotfiles repo.
 #
 # Passes (in order):
-#   -1. Yoink check       — broken symlinks in ~ → offer to remove from home/
+#   -2. Branch sync       — ensure we're on `personal`; merge main into personal
+#   -1. Yoink check       — broken symlinks in ~ → offer to remove from home/;
+#                           orphan-symlink check → dangling symlinks pointing into home/
 #    0. Re-stow           — link any new files in home/ to ~
 #    1. Dotfile drift     — untracked files in ~/.config + ~ → [t/i/s/q]
 #    2. Fisher plugin drift — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
-#    3. Brew drift        — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
-#    4. Changelog         — write a summary of changes to .wrangle-changelog
-#    5. Commit + push     — secret-scan staged diff, commit, prompt to push
-#    6. Doc sync (opt-in) — claude-code reviews docs if you've opted in
-#    7. First-run opt-in  — on the very first run, ask about claude integration
+#    3. Univ-var drift    — installed fish universals (per-prefix) → [t/i/s/q]
+#    4. Brew drift        — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
+#    5. Changelog         — write a summary of changes to .wrangle-changelog
+#    6. Commit + push     — secret-scan staged diff, commit, prompt to push
+#    7. Doc sync (opt-in) — claude-code reviews docs if you've opted in
+#    8. First-run opt-in  — on the very first run, ask about claude integration
 #
 # Prompts use consistent letters:
 #   [t]rack          — capture into the repo
@@ -33,18 +36,21 @@
 #     WRANGLE_NO_PUSH=1            skip push prompt (won't set unpushed flag)
 #     WRANGLE_NO_PUSH_NAG=1        silence the unpushed-commits nag in new shells
 #     WRANGLE_NO_STALENESS_NAG=1   silence the "wrangle hasn't run in N days" nag
+#     WRANGLE_NO_BRANCH_SWITCH=1   skip the auto-switch to personal branch
 #     WRANGLE_ALLOW_SECRETS=1      bypass scan-secrets at commit time
 #   Claude tuning (defaults are fast/cheap; raise for heavier reasoning):
 #     WRANGLE_CLAUDE_MODEL=sonnet  override claude model (alias or full name)
 #     WRANGLE_CLAUDE_EFFORT=low    override effort: low|medium|high|xhigh|max
 
-argparse h/help d/dry-run f/force with-claude suppress-claude reset-claude-session review-docs -- $argv
+argparse h/help d/dry-run f/force with-claude suppress-claude reset-claude-session review-docs no-branch-switch import-univ-vars -- $argv
 or exit 1
 
 if set -q _flag_help
-    echo "Usage: wrangle [--dry-run] [--force] [--with-claude|--suppress-claude] [--reset-claude-session] [--review-docs]"
+    echo "Usage: wrangle [--dry-run] [--force] [--with-claude|--suppress-claude]"
+    echo "               [--reset-claude-session] [--review-docs] [--no-branch-switch]"
+    echo "               [--import-univ-vars]"
     echo ""
-    echo "Find dotfile + plugin + brew drift and (by default) prompt what to do with each."
+    echo "Find dotfile + plugin + univ-var + brew drift and (by default) prompt what to do with each."
     echo ""
     echo "Options:"
     echo "  -d, --dry-run             show drift without prompting (no changes)"
@@ -54,9 +60,13 @@ if set -q _flag_help
     echo "  --reset-claude-session    drop cached claude session id"
     echo "  --review-docs             skip drift entirely; invoke claude on current state"
     echo "                            (uses recent commit log as context; ignores opt-in setting)"
+    echo "  --no-branch-switch        skip auto-switch to personal (stay on current branch)"
+    echo "  --import-univ-vars        source home/.config/fish/exported-univ-vars.fish to restore"
+    echo "                            captured plugin universals on a new machine; then exit"
     echo "  -h, --help                show this help"
     echo ""
-    echo "Opt-out env vars: WRANGLE_NO_COMMIT, WRANGLE_NO_PUSH, WRANGLE_NO_PUSH_NAG, WRANGLE_NO_STALENESS_NAG, WRANGLE_ALLOW_SECRETS"
+    echo "Opt-out env vars: WRANGLE_NO_COMMIT, WRANGLE_NO_PUSH, WRANGLE_NO_PUSH_NAG,"
+    echo "                  WRANGLE_NO_STALENESS_NAG, WRANGLE_NO_BRANCH_SWITCH, WRANGLE_ALLOW_SECRETS"
     echo "Claude tuning:    WRANGLE_CLAUDE_MODEL (default: sonnet), WRANGLE_CLAUDE_EFFORT (default: low)"
     exit 0
 end
@@ -271,6 +281,63 @@ Rules:
     echo $msg
 end
 
+# ─── Pass -2: branch sync (ensure we're on personal, merge main → personal) ─
+# Framework lives on main; wrangle's job is personal. Auto-switch with a
+# notice, then bring main's framework updates down via fast-forward merge.
+# Skip with --no-branch-switch / WRANGLE_NO_BRANCH_SWITCH=1.
+if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
+    pushd $repo >/dev/null
+
+    set -l current_branch (git rev-parse --abbrev-ref HEAD)
+    if test "$current_branch" != personal
+        if git show-ref --verify --quiet refs/heads/personal
+            git checkout personal 2>&1 | tail -1 >/dev/null
+            echo "  $GLYPH_ARROW switched to personal (was on $current_branch)"
+        else
+            git checkout -b personal 2>&1 | tail -1 >/dev/null
+            echo "  $GLYPH_ARROW created + switched to personal (was on $current_branch)"
+        end
+    end
+
+    # Merge framework updates from main (skip if dry-run, no remote, or no main).
+    if test "$_dry_run" = no; and git remote | grep -q .
+        _spinner_start "Fetching main…"
+        git fetch origin main 2>/dev/null
+        _spinner_stop
+        if git rev-parse --verify --quiet origin/main >/dev/null
+            set -l merge_out (git merge --ff-only origin/main 2>&1)
+            set -l merge_rv $status
+            if test $merge_rv -ne 0
+                # Non-fast-forward = personal has diverged from main.
+                echo "  $GLYPH_WARN personal has diverged from main; resolve manually with: git merge origin/main"
+            else if string match -q "*Already up to date*" -- "$merge_out"
+                : # silent — nothing to merge
+            else
+                echo "  $GLYPH_OK merged framework updates from main"
+            end
+        end
+    end
+
+    popd >/dev/null
+end
+
+# ─── --import-univ-vars: short-circuit, source the exported file, exit ──
+if set -q _flag_import_univ_vars
+    set -l export_file $repo/home/.config/fish/exported-univ-vars.fish
+    if not test -f $export_file
+        echo "$GLYPH_ERR No exported-univ-vars.fish found at $export_file." >&2
+        echo "  Capture them first by running wrangle and answering [t]rack on a univ-var prefix." >&2
+        exit 1
+    end
+    echo "$HEAD_OPEN─── Importing universal variables ───$HEAD_CLOSE"
+    set -l before_count (count (set -U -L))
+    source $export_file
+    set -l after_count (count (set -U -L))
+    set -l delta (math $after_count - $before_count)
+    echo "  $GLYPH_OK sourced $export_file ($delta new vars set; $after_count total universals now)"
+    exit 0
+end
+
 # ─── --review-docs: short-circuit drift, invoke claude on current state ──
 # Useful when you opted into claude AFTER making changes (so the normal
 # pass-6 path skipped because $_changes was empty), or when you've
@@ -375,6 +442,57 @@ if test (count $yoink_candidates) -gt 0
                     break
                 case '*'
                     echo "      ? '$choice' — answer y/r/s/q"
+            end
+        end
+    end
+end
+
+# ─── Pass -1b: orphan-symlink check ───────────────────────────────────────
+# Inverse of the yoink check above: ~ has a symlink pointing into the repo,
+# but the source file in home/ no longer exists (e.g., you deleted it from
+# home/ directly without unstowing first). `stow -R` leaves these behind.
+# Find and clean them up before Pass 0 (re-stow) so subsequent installs
+# don't trip over "conflicting file" errors.
+set -l orphan_symlinks
+if test "$_dry_run" = no
+    # Scan top-level ~/.<name> and ~/.config/* paths.
+    for f in $HOME/.[A-Za-z0-9]* $HOME/.config/* $HOME/.config/fish/conf.d/* $HOME/.config/fish/functions/*
+        # Only consider symlinks
+        test -L $f; or continue
+        # Only consider symlinks pointing into this repo's home/
+        set -l tgt (realpath $f 2>/dev/null)
+        string match -q "$home_subdir/*" -- $tgt; or continue
+        # Broken? (target doesn't resolve to an existing file)
+        test -e $f; and continue  # `test -e` follows symlinks; false if target missing
+        set -a orphan_symlinks $f
+    end
+end
+
+if test (count $orphan_symlinks) -gt 0
+    echo ""
+    echo "$HEAD_OPEN─── Orphan symlinks ───$HEAD_CLOSE"
+    echo "Symlinks in ~ pointing into home/ whose targets no longer exist ("(count $orphan_symlinks)"):"
+    set -l should_quit no
+    for path in $orphan_symlinks
+        test "$should_quit" = yes; and break
+        echo ""
+        echo "    $path → "(readlink $path)
+        while true
+            read -P (_prompt)"    [r]emove dangling symlink / [s]kip / [q]uit > "(_rs) choice
+            switch $choice
+                case r R remove
+                    rm $path
+                    echo "      $GLYPH_OK removed $path"
+                    _log_change "removed orphan symlink: $path"
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped"
+                    break
+                case q Q quit
+                    set should_quit yes
+                    break
+                case '*'
+                    echo "      ? '$choice' — answer r/s/q"
             end
         end
     end
@@ -656,7 +774,201 @@ else
     end
 end
 
-# ─── Pass 3: brew drift ───────────────────────────────────────────────────
+# ─── Pass 3: univ-var drift ──────────────────────────────────────────────
+# Tracks plugin universal variables (tide config, sponge config, etc.) so
+# they survive `git clone` + bootstrap on a new machine. Necessary evil:
+# fish universals are controversial upstream (#7379) but plugins like tide
+# make them their SOLE persistence mechanism. Scope is intentionally narrow
+# — see .univexport for the allowlist and the doc comments there.
+#
+# Drift detection mirrors brew/fisher/dotfile patterns:
+#   - group installed univs by prefix
+#   - filter by .univexport (already tracked) + .univignore (already ignored)
+#   - prompt [t]rack / [i]gnore forever / [s]kip / [q]uit per remaining group
+#   - on track: append pattern to .univexport, regenerate exported-univ-vars.fish
+echo ""
+echo "$HEAD_OPEN─── Univ-var drift ───$HEAD_CLOSE"
+
+set -l univ_export_file $repo/.univexport
+set -l univ_ignore_file $repo/.univignore
+set -l univ_output_file $repo/home/.config/fish/exported-univ-vars.fish
+set -l univ_changed no
+
+# Helper: extract the prefix of a univ var name (or empty if no underscore).
+function _univ_prefix --argument-names name
+    if string match -qr '^__[a-zA-Z0-9]+_' -- $name
+        string match -r '^__[a-zA-Z0-9]+_' -- $name
+    else if string match -qr '^_[a-zA-Z0-9]+_' -- $name
+        string match -r '^_[a-zA-Z0-9]+_' -- $name
+    else if string match -qr '^[a-zA-Z0-9]+_' -- $name
+        string match -r '^[a-zA-Z0-9]+_' -- $name
+    end
+end
+
+# Helper: regenerate $univ_output_file from current state + .univexport patterns.
+function _univ_regenerate --inherit-variable univ_export_file --inherit-variable univ_output_file
+    set -l patterns
+    if test -f $univ_export_file
+        set patterns (grep -vE '^\s*(#|$)' $univ_export_file)
+    end
+    if test (count $patterns) -eq 0
+        # Nothing tracked — make sure output file doesn't linger from a previous state.
+        rm -f $univ_output_file
+        return
+    end
+    mkdir -p (dirname $univ_output_file)
+    set -l tmp (mktemp)
+    echo "# Auto-generated by wrangle. Edit .univexport (allowlist) and re-run wrangle." > $tmp
+    echo "# Restore on a new machine with: wrangle --import-univ-vars" >> $tmp
+    echo "" >> $tmp
+    for name in (set -U -L | awk '{print $1}' | sort)
+        set -l matched no
+        for p in $patterns
+            if string match -q $p $name
+                set matched yes
+                break
+            end
+        end
+        test "$matched" = yes; or continue
+        # Read the var's values via dereference.
+        set -l values $$name
+        # Skip empty.
+        test (count $values) -eq 0; and continue
+        echo "set -U --erase $name" >> $tmp
+        printf 'set -U %s' $name >> $tmp
+        for v in $values
+            printf ' %s' (string escape -- $v) >> $tmp
+        end
+        printf '\n' >> $tmp
+    end
+    mv $tmp $univ_output_file
+end
+
+if test "$_dry_run" = no
+    # Load allowlist / blocklist patterns (skip comments + blanks).
+    set -l allowed_patterns
+    set -l ignored_patterns
+    if test -f $univ_export_file
+        set allowed_patterns (grep -vE '^\s*(#|$)' $univ_export_file)
+    end
+    if test -f $univ_ignore_file
+        set ignored_patterns (grep -vE '^\s*(#|$)' $univ_ignore_file)
+    end
+
+    # Get all current universals, partition into groups by prefix.
+    # We need: list of (prefix → [var names]) for untracked + un-ignored vars.
+    set -l drift_prefixes
+    set -l drift_standalone
+
+    for name in (set -U -L | awk '{print $1}')
+        # Skip if matches any allowlist pattern (already tracked)
+        set -l skip no
+        for p in $allowed_patterns
+            string match -q $p $name; and set skip yes; and break
+        end
+        test "$skip" = yes; and continue
+        # Skip if matches any ignore pattern (already ignored)
+        for p in $ignored_patterns
+            string match -q $p $name; and set skip yes; and break
+        end
+        test "$skip" = yes; and continue
+
+        set -l prefix (_univ_prefix $name)
+        if test -z "$prefix"
+            set -a drift_standalone $name
+        else
+            contains -- $prefix $drift_prefixes; or set -a drift_prefixes $prefix
+        end
+    end
+
+    if test (count $drift_prefixes) -eq 0; and test (count $drift_standalone) -eq 0
+        echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)."
+    else
+        echo "  Found "(math (count $drift_prefixes) + (count $drift_standalone))" untracked groups/vars."
+
+        set -l should_quit no
+
+        # Prompt per prefix-group
+        for prefix in $drift_prefixes
+            test "$should_quit" = yes; and break
+            # Collect actual vars under this prefix (sample up to 4 for display)
+            set -l members
+            for name in (set -U -L | awk '{print $1}')
+                set -l np (_univ_prefix $name)
+                test "$np" = "$prefix"; or continue
+                set -a members $name
+            end
+            set -l count (count $members)
+            set -l sample (string join ", " $members[1..(math min 3 $count)])
+            test $count -gt 3; and set sample "$sample, …"
+            echo ""
+            echo "    prefix \`$prefix*\` — $count var(s): $sample"
+            while true
+                read -P (_prompt)"    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+                switch $choice
+                    case t T track
+                        echo "$prefix*" >> $univ_export_file
+                        echo "      $GLYPH_OK added \`$prefix*\` to .univexport"
+                        _log_change "tracked univ-var pattern: $prefix*"
+                        set univ_changed yes
+                        break
+                    case i I ignore
+                        echo "$prefix*" >> $univ_ignore_file
+                        echo "      $GLYPH_OK added \`$prefix*\` to .univignore"
+                        _log_change "ignored univ-var pattern: $prefix*"
+                        break
+                    case s S skip ''
+                        echo "      $GLYPH_DIM skipped (will ask again next run)"
+                        break
+                    case q Q quit
+                        set should_quit yes
+                        break
+                    case '*'
+                        echo "      ? '$choice' — answer t/i/s/q"
+                end
+            end
+        end
+
+        # Prompt per standalone (no-underscore) var, asking by exact name
+        for name in $drift_standalone
+            test "$should_quit" = yes; and break
+            echo ""
+            echo "    standalone (no prefix): $name = "(string join " " $$name)
+            while true
+                read -P (_prompt)"    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+                switch $choice
+                    case t T track
+                        echo $name >> $univ_export_file
+                        echo "      $GLYPH_OK added \`$name\` to .univexport"
+                        _log_change "tracked univ-var: $name"
+                        set univ_changed yes
+                        break
+                    case i I ignore
+                        echo $name >> $univ_ignore_file
+                        echo "      $GLYPH_OK added \`$name\` to .univignore"
+                        _log_change "ignored univ-var: $name"
+                        break
+                    case s S skip ''
+                        echo "      $GLYPH_DIM skipped (will ask again next run)"
+                        break
+                    case q Q quit
+                        set should_quit yes
+                        break
+                    case '*'
+                        echo "      ? '$choice' — answer t/i/s/q"
+                end
+            end
+        end
+    end
+
+    # Regenerate exported file if anything was tracked OR if the file's current
+    # contents are stale relative to the live var values.
+    if test "$univ_changed" = yes; or test -f $univ_output_file
+        _univ_regenerate
+    end
+end
+
+# ─── Pass 4: brew drift ───────────────────────────────────────────────────
 # Brewfile mutations here are INCREMENTAL: each [t]rack appends one entry,
 # each [r]emove deletes one entry. No end-of-pass re-dump, so [s]kip truly
 # means "defer; ask me again next run." dump-brewfile is still used to

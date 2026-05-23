@@ -33,6 +33,15 @@ string match -q "*WRANGLE_CLAUDE_EFFORT*" -- "$help_out"
 string match -q "*WRANGLE_ALLOW_SECRETS*" -- "$help_out"
 @test "--help mentions WRANGLE_ALLOW_SECRETS" $status -eq 0
 
+string match -q "*--no-branch-switch*" -- "$help_out"
+@test "--help mentions --no-branch-switch" $status -eq 0
+
+string match -q "*--import-univ-vars*" -- "$help_out"
+@test "--help mentions --import-univ-vars" $status -eq 0
+
+string match -q "*WRANGLE_NO_BRANCH_SWITCH*" -- "$help_out"
+@test "--help mentions WRANGLE_NO_BRANCH_SWITCH" $status -eq 0
+
 # ─── Mutually-exclusive flags ─────────────────────────────────────────────
 
 set -l conflict_out ($wrangle --with-claude --suppress-claude 2>&1)

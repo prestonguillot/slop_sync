@@ -1,0 +1,16 @@
+# Universal-variable export allowlist.
+# Each line is a fish-style glob matched against universal variable names.
+# Patterns are typically added by answering [t]rack in a wrangle session;
+# manual edits work too.
+#
+# Comments (#) and blank lines ignored.
+#
+# IMPORTANT context — see https://github.com/fish-shell/fish-shell/issues/7379
+#   * Fish universals are controversial and may be deprecated upstream.
+#     Treat this file as a "necessary evil" for plugins (e.g. tide, sponge)
+#     that use universals as their SOLE config persistence mechanism.
+#   * Don't add patterns for fish native settings (theme colors, key
+#     bindings) — those should be persisted via config.fish or function
+#     files in home/.
+#   * Don't add patterns for plugin INTERNAL state (typically `_<plugin>_*`
+#     prefixed) — those are per-process caches, useless cross-machine.
