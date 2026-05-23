@@ -1,0 +1,36 @@
+{
+  "base_keymap": "JetBrains",
+  "text_rendering_mode": "platform_default",
+  "ui_font_family": ".ZedSans",
+  "buffer_line_height": "standard",
+  "buffer_font_family": "Monaspace Xenon",
+  "telemetry": {
+    "diagnostics": false,
+    "metrics": false
+  },
+  "session": {
+    "trust_all_worktrees": true
+  },
+  "on_last_window_closed": "quit_app",
+  "when_closing_with_no_tabs": "close_window",
+  "theme": "VSCode Dark Modern",
+  "ui_font_size": 16,
+  "buffer_font_size": 13.0,
+  "format_on_save": "on",
+  "soft_wrap": "preferred_line_length",
+  "preferred_line_length": 160,
+  "inlay_hints": {
+    "enabled": true,
+    "show_type_hints": true,
+    "show_parameter_hints": true,
+    "show_other_hints": true,
+    "show_background": false,
+    "edit_debounce_ms": 700,
+    "scroll_debounce_ms": 50,
+    "toggle_on_modifiers_press": null
+  },
+  "minimap": {
+    "show": "always"
+  },
+  "auto_signature_help": true
+}
