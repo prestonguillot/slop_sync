@@ -44,13 +44,13 @@ branch.<name>.wrangle-parent <parent>   # what to merge FROM at the start of eac
 
 `bootstrap` sets these for you on first run. Existing setups (just `main` + `personal`) work without explicit config — wrangle defaults to `machine-branch=personal` and `parent=main`.
 
-At the start of every `wrangle` run, **Pass 1 walks the chain root-toward-leaf** and merges each parent into its child (skipping edges that already have the parent's commits). On merge conflict the cascade stops, prints resolve instructions, and you resume with `wrangle --resume-pull` after `git add` + `git commit`.
+At the start of every `wrangle sync` run, **Pass 1 walks the chain root-toward-leaf** and merges each parent into its child (skipping edges that already have the parent's commits). On merge conflict the cascade stops, prints resolve instructions, and you resume with `wrangle pull --resume` after `git add` + `git commit`.
 
 You can also just run the cascade without going through drift detection:
 
 ```fish
-wrangle --pull            # fetch + cascade, exit
-wrangle --resume-pull     # continue after a conflict
+wrangle pull              # fetch + cascade, exit
+wrangle pull --resume     # continue after a conflict
 ```
 
 ## What's in this repo
@@ -113,25 +113,33 @@ setup-new-machine.md   The bootstrap walkthrough.
 
 ## Running wrangle
 
+Wrangle is structured as subcommands. Bare `wrangle` is shorthand for `wrangle sync` — the dominant case.
+
 ```fish
-wrangle                       # full sync — all 12 passes (default)
-wrangle --pull                # just walk the parent chain (fetch + cascade-merge), exit
-wrangle --resume-pull         # continue a cascade interrupted by a merge conflict
-wrangle --dry-run             # detect drift, change nothing, no commit, no push
-wrangle --force               # re-ask about paths already in .dotignore
-wrangle --import-univ-vars    # source home/.config/fish/exported-univ-vars.fish, exit
-wrangle --with-claude         # force-on claude doc review this run
-wrangle --suppress-claude     # force-off claude this run
-wrangle --reset-claude-session  # drop the cached claude session id; next run uses a fresh one
-wrangle --review-docs         # skip drift; just have claude review docs against recent commits
-wrangle --no-branch-switch    # don't auto-switch to machine-branch, stay where you are
-wrangle --set-parent <branch> # write branch.<current>.wrangle-parent in git config
-wrangle --help                # full flag reference + env-var + config-key list
+wrangle                                # = wrangle sync
+wrangle sync                           # full sync — all 12 passes
+wrangle sync --dry-run                 # detect drift, change nothing, no commit, no push
+wrangle sync --force                   # re-ask about paths already in .dotignore
+wrangle sync --with-claude             # force-on claude doc review this run
+wrangle sync --suppress-claude         # force-off claude this run
+wrangle sync --no-branch-switch        # don't auto-switch to machine-branch, stay where you are
+
+wrangle pull                           # just walk the parent chain (fetch + cascade-merge), exit
+wrangle pull --resume                  # continue a cascade interrupted by a merge conflict
+
+wrangle review-docs                    # skip drift; have claude review docs against recent commits
+wrangle import-univ-vars               # source home/.config/fish/exported-univ-vars.fish, exit
+wrangle set-parent <branch>            # write branch.<current>.wrangle-parent in git config
+wrangle reset-claude-session           # drop the cached claude session id
+
+wrangle help                           # list subcommands + env vars + config keys
+wrangle help <subcommand>              # detailed help for one subcommand
+wrangle <subcommand> --help            # same as `wrangle help <subcommand>`
 ```
 
 ## What each pass does
 
-1. **Parent-chain pull.** Fetches `origin`, walks the chain (e.g. `main → personal → work`) root-toward-leaf, real-merging (`--no-ff`) each parent into its child. Skips edges that are already up-to-date. On conflict: saves resume state, exits non-zero, prints `wrangle --resume-pull` instructions. Skipped if `--no-branch-switch` / `WRANGLE_NO_BRANCH_SWITCH=1`.
+1. **Parent-chain pull.** Fetches `origin`, walks the chain (e.g. `main → personal → work`) root-toward-leaf, real-merging (`--no-ff`) each parent into its child. Skips edges that are already up-to-date. On conflict: saves resume state, exits non-zero, prints `wrangle pull --resume` instructions. Skipped if `sync --no-branch-switch` / `WRANGLE_NO_BRANCH_SWITCH=1`.
 
 2. **Yoink check.** Walks `home/` looking for files whose `~` counterpart is gone (you deleted the symlink target). Per match: `[y]oink (remove from repo) / [r]estore (stow back) / [s]kip / [q]uit`.
 
@@ -169,7 +177,7 @@ The dotfile pass also has a **built-in skiplist** of credential-bearing paths (`
 
 | File | Purpose | Syntax | How to add |
 |---|---|---|---|
-| `.univexport` | Allowlist of universal variables to capture in `home/.config/fish/exported-univ-vars.fish` (the file you `wrangle --import-univ-vars` on a new machine). | One fish-style glob per line, OR an exact var name (exact name match wins over the auto-skip of `_*`). | Answer `[t]rack pattern` in a wrangle univ-var prompt, or hand-edit. |
+| `.univexport` | Allowlist of universal variables to capture in `home/.config/fish/exported-univ-vars.fish` (the file you `wrangle import-univ-vars` on a new machine). | One fish-style glob per line, OR an exact var name (exact name match wins over the auto-skip of `_*`). | Answer `[t]rack pattern` in a wrangle univ-var prompt, or hand-edit. |
 
 ## Cache + state
 
@@ -207,7 +215,7 @@ Per-clone (in `.git/config`):
 | Key | Default | Purpose |
 |---|---|---|
 | `wrangle.machine-branch` | `personal` | Which branch this machine commits to (= which branch wrangle auto-switches to). |
-| `branch.<X>.wrangle-parent` | `main` (when `<X> != main`) | What to merge from at the start of every run. Set via `wrangle --set-parent <parent>` or directly. |
+| `branch.<X>.wrangle-parent` | `main` (when `<X> != main`) | What to merge from at the start of every run. Set via `wrangle set-parent <parent>` or directly via `git config`. |
 
 ## conf.d hooks
 

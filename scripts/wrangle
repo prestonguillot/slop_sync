@@ -75,34 +75,47 @@ else
     set -e argv[1]
 end
 
-# Per-subcommand argparse: each subcommand declares only its own flags.
-# Anything else errors out (which is what we want).
+# Reject unknown subcommands.
 switch $_subcmd
-    case sync
-        argparse h/help d/dry-run f/force with-claude suppress-claude no-branch-switch -- $argv
-        or exit 1
-    case pull
-        argparse h/help resume -- $argv
-        or exit 1
-    case review-docs
-        argparse h/help -- $argv
-        or exit 1
-    case import-univ-vars
-        argparse h/help -- $argv
-        or exit 1
-    case set-parent
-        argparse h/help -- $argv
-        or exit 1
-    case reset-claude-session
-        argparse h/help -- $argv
-        or exit 1
-    case help
-        argparse h/help -- $argv
-        or exit 1
+    case sync pull review-docs import-univ-vars set-parent reset-claude-session help
+        # known — handled below
     case '*'
         echo "wrangle: unknown subcommand: $_subcmd" >&2
         echo "Run \`wrangle help\` for a list of subcommands." >&2
         exit 2
+end
+
+# Argparse: declares the UNION of all subcommand flags. We then validate
+# per-subcommand which flags are allowed (and reject combinations like
+# `wrangle pull --dry-run` where the flag belongs to a different subcommand).
+# Argparse must run at top-level (not in a switch/if) so the resulting
+# _flag_* vars survive into the rest of the script.
+argparse h/help d/dry-run f/force with-claude suppress-claude no-branch-switch resume -- $argv
+or exit 1
+
+# Per-subcommand flag-validity gate.
+function _wrangle_reject_flag --argument-names subcmd flag
+    echo "wrangle $subcmd: unknown option: $flag" >&2
+    echo "Run \`wrangle help $subcmd\` for valid options." >&2
+    exit 2
+end
+switch $_subcmd
+    case sync
+        set -q _flag_resume; and _wrangle_reject_flag sync --resume
+    case pull
+        set -q _flag_dry_run;          and _wrangle_reject_flag pull --dry-run
+        set -q _flag_force;            and _wrangle_reject_flag pull --force
+        set -q _flag_with_claude;      and _wrangle_reject_flag pull --with-claude
+        set -q _flag_suppress_claude;  and _wrangle_reject_flag pull --suppress-claude
+        set -q _flag_no_branch_switch; and _wrangle_reject_flag pull --no-branch-switch
+    case review-docs import-univ-vars set-parent reset-claude-session help
+        # No flags besides --help.
+        set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
+        set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
+        set -q _flag_with_claude;      and _wrangle_reject_flag $_subcmd --with-claude
+        set -q _flag_suppress_claude;  and _wrangle_reject_flag $_subcmd --suppress-claude
+        set -q _flag_no_branch_switch; and _wrangle_reject_flag $_subcmd --no-branch-switch
+        set -q _flag_resume;           and _wrangle_reject_flag $_subcmd --resume
 end
 
 # ── Help printers ─────────────────────────────────────────────────────
