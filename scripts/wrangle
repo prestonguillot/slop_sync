@@ -1165,38 +1165,18 @@ else
 end
 
 # ─── Skiplist (sole source: .dotignore) ──────────────────────────────────
-# Each non-blank, non-comment line is either:
-#   - A fish-style glob (contains *, ?, or [) — matched against basename
-#     OR full relative path.
-#   - An exact path or directory prefix — matches the path itself or
-#     anything beneath it.
-# Trailing comments and whitespace are stripped.
-# `--force` bypasses this file entirely (intentional: pre-commit secret-scan
-# is the secondary safety net).
+# Logic lives in scripts/_skiplist.fish (shared with test/skiplist.fish).
+# `--force` bypasses .dotignore entirely (the pre-commit secret-scan is the
+# secondary safety net).
+source $repo/scripts/_skiplist.fish
+
 set -l user_ignores
-if test -f $ignore_file; and test "$_force" = no
-    set user_ignores (sed -E 's/[[:space:]]*#.*$//' $ignore_file \
-        | sed -E 's/[[:space:]]+$//' \
-        | grep -v '^[[:space:]]*$')
+if test "$_force" = no
+    set user_ignores (_wrangle_load_dotignore $ignore_file)
 end
 
 function _is_skipped --inherit-variable user_ignores
-    set -l rel $argv[1]
-    for s in $user_ignores
-        # Glob entries (contain *, ?, or [) → fish-glob match against basename
-        # or full path.
-        if string match -qr '[*?\[]' -- $s
-            if string match -q -- $s (basename $rel); or string match -q -- $s $rel
-                return 0
-            end
-        else
-            # Exact path or directory prefix.
-            if test "$rel" = "$s"; or string match -q -- "$s/*" $rel
-                return 0
-            end
-        end
-    end
-    return 1
+    _wrangle_is_skipped $argv[1] $user_ignores
 end
 
 function _is_tracked --inherit-variable home_subdir

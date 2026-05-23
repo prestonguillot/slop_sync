@@ -2,8 +2,6 @@
 
 A sync system for keeping your macOS shell + tooling state consistent across machines, without ever asking you to maintain the inventory by hand.
 
-> The repo's still called `slop_sync` because the name is funny. The project itself is `wrangle`.
-
 ## What this is
 
 You install tools, write dotfiles, install fisher plugins, configure plugins via fish universals. Over time your machine drifts from anything you've checked in. Normally you'd notice this only when standing up a new machine — at which point you scramble to reconstruct what you had.
