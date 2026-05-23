@@ -12,7 +12,6 @@ set -l _dotfiles_repo (realpath (status -f) | string replace -r '/home/\.config/
 if test -d $_dotfiles_repo/scripts
     set -x PATH $PATH $_dotfiles_repo/scripts
 end
-set -e _dotfiles_repo
 
 if status is-interactive; and test -z "$WRANGLE_NO_STALENESS_NAG"
     set -l _stamp ~/.cache/dotfiles/last-wrangle
@@ -27,8 +26,14 @@ if status is-interactive; and test -z "$WRANGLE_NO_STALENESS_NAG"
     end
 end
 
-if status is-interactive; and test -z "$WRANGLE_NO_PUSH_NAG"
-    if test -f ~/.cache/dotfiles/unpushed
-        echo "⚠  dotfiles repo has unpushed commits. Push when ready (or set WRANGLE_NO_PUSH_NAG=1 to silence)."
+# Unpushed-commits nag. Asks git directly so it stays accurate even if you
+# push outside wrangle (manual `git push`, push from another machine, etc.).
+# Quiet if no upstream is configured or repo is in a weird state.
+if status is-interactive; and test -z "$WRANGLE_NO_PUSH_NAG"; and test -d $_dotfiles_repo/.git
+    set -l _ahead (command git -C $_dotfiles_repo rev-list --count '@{u}..HEAD' 2>/dev/null)
+    if test -n "$_ahead"; and test $_ahead -gt 0
+        echo "⚠  dotfiles repo has $_ahead unpushed commit(s). Push when ready (or set WRANGLE_NO_PUSH_NAG=1 to silence)."
     end
 end
+
+set -e _dotfiles_repo
