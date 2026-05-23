@@ -1,0 +1,149 @@
+" Important!!
+if has('termguicolors')
+ set termguicolors
+endif
+
+" Enable syntax highlighting
+syntax on
+
+" Enable mouse support in all modes
+set mouse=a
+
+" Enable line numbers
+set number
+
+" Enable filetype detection and plugins
+filetype on
+filetype plugin on
+filetype indent on
+
+" Better search highlighting
+set hlsearch
+set incsearch
+
+" Show matching brackets
+set showmatch
+
+" Enable clipboard integration
+set clipboard=unnamed
+
+" Better indentation
+set autoindent
+set smartindent
+set expandtab
+set tabstop=4
+set shiftwidth=4
+
+" Show current mode
+set showmode
+
+" Enable status line
+set laststatus=2
+
+" Better command completion
+set wildmenu
+set wildmode=longest,list,full
+
+" The configuration options should be placed before `colorscheme sonokai`.
+let g:sonokai_style = 'andromeda'
+let g:sonokai_better_performance = 1
+
+:colorscheme sonokai
+
+" ─── Modern Key Mappings ─────────────────────────────────────────────
+" Enable Shift + arrow/home/end selection (like modern text editors)
+set keymodel=startsel,stopsel
+set selectmode=mouse,key
+set selection=inclusive
+
+" Option + Right Arrow: Move to end of current word (or next word if at boundary)
+" This creates smarter word-end navigation like modern editors
+nnoremap <M-Right> e
+vnoremap <M-Right> e
+inoremap <M-Right> <C-o>e
+
+" Option + Left Arrow: Move to beginning of current word (or previous word)
+nnoremap <M-Left> b
+vnoremap <M-Left> b
+inoremap <M-Left> <C-o>b
+
+" Additional modern-style mappings
+" Shift + Option + Right/Left for word selection
+vnoremap <S-M-Right> e
+vnoremap <S-M-Left> b
+
+" Make Backspace work in visual mode
+vnoremap <BS> d
+
+" Command + Left/Right Arrow: Move to beginning/end of line
+" These work in MacVim GUI but need explicit mapping for terminal vim
+nnoremap <D-Left> ^
+vnoremap <D-Left> ^
+inoremap <D-Left> <C-o>^
+nnoremap <D-Right> $
+vnoremap <D-Right> $
+inoremap <D-Right> <C-o>$
+
+" Command + Shift + Left/Right: Select to beginning/end of line
+" Fix the single-character selection issue
+" Use 0 instead of ^ to go to absolute beginning of line
+nnoremap <S-D-Left> v0
+nnoremap <S-D-Right> v$
+" In visual mode, extend selection to line boundaries
+vnoremap <S-D-Left> 0
+vnoremap <S-D-Right> $
+" In insert mode, start visual selection to line boundaries
+inoremap <S-D-Left> <C-o>v0
+inoremap <S-D-Right> <C-o>v$
+
+" For terminal vim, also map common key sequences that terminals might send
+" Some terminals send these sequences for Cmd+arrows
+nnoremap <C-a> ^
+vnoremap <C-a> ^
+inoremap <C-a> <C-o>^
+nnoremap <C-e> $
+vnoremap <C-e> $
+inoremap <C-e> <C-o>$
+
+" Home/End keys (often mapped to Cmd+Left/Right in some terminals)
+nnoremap <Home> ^
+vnoremap <Home> ^
+inoremap <Home> <C-o>^
+nnoremap <End> $
+vnoremap <End> $
+inoremap <End> <C-o>$
+
+" Shift + Home/End for line selection
+vnoremap <S-Home> 0
+vnoremap <S-End> $
+nnoremap <S-Home> v0
+nnoremap <S-End> v$
+inoremap <S-Home> <C-o>v0
+inoremap <S-End> <C-o>v$
+
+" Additional practical alternatives for terminal vim users:
+" Ctrl+A/E work in most terminals (common Unix shortcuts)
+" Fn+Left/Right often sends Home/End sequences
+" These provide consistent line navigation when Command keys don't work
+
+" ─── Cursor Shape Configuration ──────────────────────────────────────────
+" Use different cursor shapes for different modes (like MacVim)
+" 1 = blinking block, 2 = solid block, 3 = blinking underscore
+" 4 = solid underscore, 5 = blinking vertical bar, 6 = solid vertical bar
+if exists('$TMUX')
+    " tmux sequences
+    let &t_SI = "\<Esc>Ptmux;\<Esc>\<Esc>[6 q\<Esc>\\"
+    let &t_SR = "\<Esc>Ptmux;\<Esc>\<Esc>[4 q\<Esc>\\"
+    let &t_EI = "\<Esc>Ptmux;\<Esc>\<Esc>[2 q\<Esc>\\"
+else
+    " normal terminal sequences
+    let &t_SI = "\<Esc>[6 q"  " solid vertical bar for insert mode
+    let &t_SR = "\<Esc>[4 q"  " solid underscore for replace mode  
+    let &t_EI = "\<Esc>[2 q"  " solid block for normal mode
+endif
+
+" Reset cursor on vim exit
+augroup RestoreCursor
+    autocmd!
+    autocmd VimLeave * silent !echo -ne "\033[2 q"
+augroup END
