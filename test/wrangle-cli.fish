@@ -2,12 +2,32 @@
 
 set -l wrangle (dirname (realpath (status -f)))/../scripts/wrangle
 
-# ─── Top-level help ──────────────────────────────────────────────────────
+# ─── Top-level help: all of `wrangle`, `wrangle -h`, `wrangle --help`,
+#     and `wrangle help` should print the same thing and exit 0.
 
-$wrangle help >/dev/null
-@test "wrangle help exits 0" $status -eq 0
+for invocation in (echo bare) -h --help help
+    # `bare` represents calling with no args.
+    if test "$invocation" = bare
+        $wrangle >/dev/null
+    else
+        $wrangle $invocation >/dev/null
+    end
+    @test "wrangle $invocation exits 0" $status -eq 0
+end
 
 set -l top_help ($wrangle help)
+
+set -l bare_help ($wrangle)
+test "$bare_help" = "$top_help"
+@test "bare wrangle prints same output as `wrangle help`" $status -eq 0
+
+set -l dash_h_help ($wrangle -h)
+test "$dash_h_help" = "$top_help"
+@test "wrangle -h prints same output as `wrangle help`" $status -eq 0
+
+set -l dash_dash_help_help ($wrangle --help)
+test "$dash_dash_help_help" = "$top_help"
+@test "wrangle --help prints same output as `wrangle help`" $status -eq 0
 
 for subcmd in sync pull review-docs import-univ-vars set-parent reset-claude-session
     string match -q "*$subcmd*" -- "$top_help"
@@ -55,7 +75,31 @@ string match -q "*unknown subcommand*" -- "$unknown_err"
 @test "unknown subcommand prints 'unknown subcommand'" $status -eq 0
 
 string match -q "*wrangle help*" -- "$unknown_err"
-@test "unknown subcommand suggests \`wrangle help\`" $status -eq 0
+@test "unknown subcommand suggests `wrangle help`" $status -eq 0
+
+# Leading flag (no subcommand) is rejected, NOT defaulted to sync.
+$wrangle --dry-run 2>/dev/null
+@test "wrangle --dry-run (no subcommand) exits non-zero" $status -ne 0
+
+set -l flag_err ($wrangle --dry-run 2>&1)
+string match -q "*flag, not a subcommand*" -- "$flag_err"
+@test "wrangle --dry-run prints 'flag, not a subcommand'" $status -eq 0
+
+# ─── Backtick rendering: help text + error text must NOT contain literal
+#     backslash-backticks (`\``). Fish doesn't need backticks escaped in
+#     double-quoted strings; if any `echo "\`...\`"` slipped through, this
+#     test catches it.
+set -l top_help_str ($wrangle help | string join \n)
+not string match -q '*\\`*' -- "$top_help_str"
+@test "top-level help has no literal backslash-backticks" $status -eq 0
+
+set -l sync_help_str ($wrangle sync --help | string join \n)
+not string match -q '*\\`*' -- "$sync_help_str"
+@test "sync help has no literal backslash-backticks" $status -eq 0
+
+set -l pull_help_str ($wrangle pull --help | string join \n)
+not string match -q '*\\`*' -- "$pull_help_str"
+@test "pull help has no literal backslash-backticks" $status -eq 0
 
 # ─── sync-specific: mutually-exclusive flags ────────────────────────────
 
