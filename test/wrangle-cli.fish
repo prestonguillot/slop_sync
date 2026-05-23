@@ -42,6 +42,24 @@ string match -q "*--import-univ-vars*" -- "$help_out"
 string match -q "*WRANGLE_NO_BRANCH_SWITCH*" -- "$help_out"
 @test "--help mentions WRANGLE_NO_BRANCH_SWITCH" $status -eq 0
 
+string match -q "*--pull*" -- "$help_out"
+@test "--help mentions --pull" $status -eq 0
+
+string match -q "*--resume-pull*" -- "$help_out"
+@test "--help mentions --resume-pull" $status -eq 0
+
+string match -q "*--set-parent*" -- "$help_out"
+@test "--help mentions --set-parent" $status -eq 0
+
+string match -q "*WRANGLE_NO_PULL_NAG*" -- "$help_out"
+@test "--help mentions WRANGLE_NO_PULL_NAG" $status -eq 0
+
+string match -q "*wrangle.machine-branch*" -- "$help_out"
+@test "--help mentions wrangle.machine-branch config key" $status -eq 0
+
+string match -q "*wrangle-parent*" -- "$help_out"
+@test "--help mentions branch.<X>.wrangle-parent config key" $status -eq 0
+
 # ─── Mutually-exclusive flags ─────────────────────────────────────────────
 
 set -l conflict_out ($wrangle --with-claude --suppress-claude 2>&1)
