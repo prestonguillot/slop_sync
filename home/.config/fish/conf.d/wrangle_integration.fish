@@ -97,9 +97,13 @@ if status is-interactive; and test -z "$WRANGLE_NO_PULL_NAG"; and test -d $_dotf
             if test "$_cached" = "$_sha"
                 continue   # already nagged about this SHA, skip
             end
-            # Format: "  main → personal: 1 commit"
+            # Format: "  main → personal: 1 commit" / "  main → personal: 2 commits"
+            # NB: must double-quote pluralization. `commit(s)` unquoted is a
+            # command substitution in fish ("run the command `s`"), which is
+            # how this code shipped buggy in v1.6.0 and went unnoticed until
+            # someone hit the >1-commit branch.
             set -l _commit_word commit
-            test $_ahead -gt 1; and set _commit_word commit(s)
+            test $_ahead -gt 1; and set _commit_word commits
             set _lines $_lines "  "(__wrangle_nag_name $_parent)" → "(__wrangle_nag_name $_child)": "(__wrangle_nag_count "$_ahead")" $_commit_word"
             set _need_update yes
         end
