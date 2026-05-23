@@ -62,46 +62,202 @@
 #   branch.<name>.wrangle-parent <parent>   what to merge from at the start of each run
 #                                           (default: main; empty = root branch with no parent)
 
-argparse h/help d/dry-run f/force with-claude suppress-claude reset-claude-session review-docs no-branch-switch import-univ-vars p/pull resume-pull set-parent= -- $argv
+# ── Subcommand dispatch ────────────────────────────────────────────────
+# Two-arg shape: `wrangle <subcmd> [<args>...]`. Bare `wrangle` runs `sync`;
+# leading `-flag` is an ergonomic shortcut for `sync <-flag>`.
+set -g _subcmd
+if test (count $argv) -eq 0
+    set _subcmd sync
+else if string match -q -- '-*' $argv[1]
+    set _subcmd sync
+else
+    set _subcmd $argv[1]
+    set -e argv[1]
+end
+
+# Reject unknown subcommands.
+switch $_subcmd
+    case sync pull review-docs import-univ-vars set-parent reset-claude-session help
+        # known — handled below
+    case '*'
+        echo "wrangle: unknown subcommand: $_subcmd" >&2
+        echo "Run \`wrangle help\` for a list of subcommands." >&2
+        exit 2
+end
+
+# Argparse: declares the UNION of all subcommand flags. We then validate
+# per-subcommand which flags are allowed (and reject combinations like
+# `wrangle pull --dry-run` where the flag belongs to a different subcommand).
+# Argparse must run at top-level (not in a switch/if) so the resulting
+# _flag_* vars survive into the rest of the script.
+argparse h/help d/dry-run f/force with-claude suppress-claude no-branch-switch resume -- $argv
 or exit 1
 
-if set -q _flag_help
-    echo "Usage: wrangle [--dry-run] [--force] [--with-claude|--suppress-claude]"
-    echo "               [--reset-claude-session] [--review-docs] [--no-branch-switch]"
-    echo "               [--import-univ-vars] [--pull|--resume-pull]"
-    echo "               [--set-parent <branch>]"
+# Per-subcommand flag-validity gate.
+function _wrangle_reject_flag --argument-names subcmd flag
+    echo "wrangle $subcmd: unknown option: $flag" >&2
+    echo "Run \`wrangle help $subcmd\` for valid options." >&2
+    exit 2
+end
+switch $_subcmd
+    case sync
+        set -q _flag_resume; and _wrangle_reject_flag sync --resume
+    case pull
+        set -q _flag_dry_run;          and _wrangle_reject_flag pull --dry-run
+        set -q _flag_force;            and _wrangle_reject_flag pull --force
+        set -q _flag_with_claude;      and _wrangle_reject_flag pull --with-claude
+        set -q _flag_suppress_claude;  and _wrangle_reject_flag pull --suppress-claude
+        set -q _flag_no_branch_switch; and _wrangle_reject_flag pull --no-branch-switch
+    case review-docs import-univ-vars set-parent reset-claude-session help
+        # No flags besides --help.
+        set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
+        set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
+        set -q _flag_with_claude;      and _wrangle_reject_flag $_subcmd --with-claude
+        set -q _flag_suppress_claude;  and _wrangle_reject_flag $_subcmd --suppress-claude
+        set -q _flag_no_branch_switch; and _wrangle_reject_flag $_subcmd --no-branch-switch
+        set -q _flag_resume;           and _wrangle_reject_flag $_subcmd --resume
+end
+
+# ── Help printers ─────────────────────────────────────────────────────
+function _wrangle_help_top
+    echo "Usage: wrangle <subcommand> [args]"
+    echo "       wrangle                              # shorthand for: wrangle sync"
     echo ""
-    echo "Find dotfile + plugin + univ-var + brew drift and (by default) prompt what to do with each."
+    echo "Subcommands:"
+    echo "  sync                  detect drift + commit + push (default if no subcommand)"
+    echo "  pull [--resume]       fetch + cascade-merge along the parent chain"
+    echo "  review-docs           skip drift; have claude review docs against recent commits"
+    echo "  import-univ-vars      restore captured fish universals from exported-univ-vars.fish"
+    echo "  set-parent <branch>   declare current branch's wrangle-parent in git config"
+    echo "  reset-claude-session  drop cached claude session id; next claude call uses a fresh one"
+    echo "  help [<subcmd>]       this message, or detailed help for a subcommand"
+    echo ""
+    echo "Env-var knobs:"
+    echo "  WRANGLE_NO_COMMIT             skip the commit pass"
+    echo "  WRANGLE_NO_PUSH               skip the push pass"
+    echo "  WRANGLE_NO_PUSH_NAG           silence unpushed-commits nag on shell start"
+    echo "  WRANGLE_NO_PULL_NAG           silence upstream-changes-pending nag on shell start"
+    echo "  WRANGLE_NO_STALENESS_NAG      silence \"hasn't run in N days\" nag on shell start"
+    echo "  WRANGLE_NO_BRANCH_SWITCH      skip the parent-chain pull at sync start"
+    echo "  WRANGLE_ALLOW_SECRETS         bypass scan-secrets at commit time"
+    echo "  WRANGLE_CLAUDE_MODEL=sonnet   override claude model"
+    echo "  WRANGLE_CLAUDE_EFFORT=low     override claude effort (low|medium|high|xhigh|max)"
+    echo ""
+    echo "Git config (per-clone):"
+    echo "  wrangle.machine-branch <name>           which branch this machine owns (default: personal)"
+    echo "  branch.<X>.wrangle-parent <parent>      what to merge from at the start of each run"
+    echo "                                          (default: main; main itself never has a parent)"
+end
+
+function _wrangle_help_sync
+    echo "Usage: wrangle sync [-d|--dry-run] [-f|--force]"
+    echo "                    [--with-claude|--suppress-claude]"
+    echo "                    [--no-branch-switch]"
+    echo ""
+    echo "Find dotfile + plugin + univ-var + brew drift and (by default) prompt"
+    echo "per-item what to do. Commits the result. Optionally pushes."
+    echo ""
+    echo "This is the default subcommand — bare \`wrangle\` runs it."
     echo ""
     echo "Options:"
-    echo "  -d, --dry-run             show drift without prompting (no changes)"
-    echo "  -f, --force               re-ask about paths already in .dotignore"
-    echo "  --with-claude             force claude doc review this run"
-    echo "  --suppress-claude         skip claude doc review this run"
-    echo "  --reset-claude-session    drop cached claude session id"
-    echo "  --review-docs             skip drift entirely; invoke claude on current state"
-    echo "                            (uses recent commit log as context; ignores opt-in setting)"
-    echo "  --no-branch-switch        skip auto-switch to machine-branch (stay on current branch)"
-    echo "  --import-univ-vars        source home/.config/fish/exported-univ-vars.fish to restore"
-    echo "                            captured plugin universals on a new machine; then exit"
-    echo "  -p, --pull                walk the parent chain (fetch + cascade-merge), then exit"
-    echo "  --resume-pull             continue a cascade that was interrupted by a merge conflict"
-    echo "  --set-parent <branch>     declare <branch> as the current branch's wrangle-parent"
-    echo "                            (writes branch.<current>.wrangle-parent in git config)"
-    echo "  -h, --help                show this help"
+    echo "  -d, --dry-run         detect drift, change nothing, no commit, no push"
+    echo "  -f, --force           re-ask about paths already in .dotignore"
+    echo "  --with-claude         force-on claude doc review this run (overrides config)"
+    echo "  --suppress-claude     force-off claude this run (overrides config)"
+    echo "  --no-branch-switch    skip the parent-chain pull at the start (stay on current branch)"
+end
+
+function _wrangle_help_pull
+    echo "Usage: wrangle pull [--resume]"
     echo ""
-    echo "Opt-out env vars: WRANGLE_NO_COMMIT, WRANGLE_NO_PUSH, WRANGLE_NO_PUSH_NAG,"
-    echo "                  WRANGLE_NO_PULL_NAG, WRANGLE_NO_STALENESS_NAG, WRANGLE_NO_BRANCH_SWITCH,"
-    echo "                  WRANGLE_ALLOW_SECRETS"
-    echo "Claude tuning:    WRANGLE_CLAUDE_MODEL (default: sonnet), WRANGLE_CLAUDE_EFFORT (default: low)"
-    echo "Git config keys:  wrangle.machine-branch (default: personal)"
-    echo "                  branch.<X>.wrangle-parent (default: main)"
+    echo "Fetch from origin and cascade-merge along the parent chain. For each"
+    echo "(parent, child) edge in the chain, real-merges parent into child (unless"
+    echo "the child already has the parent's commits, in which case skip)."
+    echo ""
+    echo "On merge conflict, stops mid-cascade, prints resolve instructions, and"
+    echo "saves resume state. Resolve manually (\`git add\` + \`git commit\`) then"
+    echo "continue with \`wrangle pull --resume\`."
+    echo ""
+    echo "Options:"
+    echo "  --resume    continue a cascade that was interrupted by a merge conflict"
+end
+
+function _wrangle_help_review_docs
+    echo "Usage: wrangle review-docs"
+    echo ""
+    echo "Skip drift detection entirely; invoke claude to review the repo's docs"
+    echo "against the current state and recent commits. Useful after a flurry of"
+    echo "changes when wrangle's per-run doc-sync didn't catch up."
+    echo ""
+    echo "Requires the claude CLI on PATH. Ignores the wrangle.claude opt-in setting"
+    echo "(if you ran this subcommand, you opted in for this run)."
+end
+
+function _wrangle_help_import_univ_vars
+    echo "Usage: wrangle import-univ-vars"
+    echo ""
+    echo "Source \`home/.config/fish/exported-univ-vars.fish\` to restore captured"
+    echo "plugin universal variables (tide, sponge, etc.) on a fresh machine."
+    echo "Errors if the file doesn't exist — capture them first by answering"
+    echo "[t]rack on a univ-var prefix during a \`wrangle sync\` session."
+end
+
+function _wrangle_help_set_parent
+    echo "Usage: wrangle set-parent <branch>"
+    echo ""
+    echo "Declare <branch> as the wrangle-parent of the current branch. Writes"
+    echo "branch.<current>.wrangle-parent to git config (per-clone). Used by"
+    echo "\`wrangle pull\` to determine where the cascade merges from."
+    echo ""
+    echo "Refuses to run if the current branch is \`main\` (main is always the root)."
+end
+
+function _wrangle_help_reset_claude_session
+    echo "Usage: wrangle reset-claude-session"
+    echo ""
+    echo "Drop the cached claude session id at ~/.cache/dotfiles/claude-session-id."
+    echo "The next claude invocation (from any other subcommand) starts a fresh"
+    echo "session instead of resuming the previous one. Useful when you want claude"
+    echo "to re-read repo state from scratch rather than relying on prior context."
+end
+
+# Dispatch help if requested.
+if test "$_subcmd" = help
+    if test (count $argv) -eq 0
+        _wrangle_help_top
+    else
+        switch $argv[1]
+            case sync;                  _wrangle_help_sync
+            case pull;                  _wrangle_help_pull
+            case review-docs;           _wrangle_help_review_docs
+            case import-univ-vars;      _wrangle_help_import_univ_vars
+            case set-parent;            _wrangle_help_set_parent
+            case reset-claude-session;  _wrangle_help_reset_claude_session
+            case '*'
+                echo "wrangle: unknown subcommand: $argv[1]" >&2
+                exit 2
+        end
+    end
     exit 0
 end
 
-if set -q _flag_with_claude; and set -q _flag_suppress_claude
-    echo "$GLYPH_ERR --with-claude and --suppress-claude are mutually exclusive." >&2
-    exit 2
+if set -q _flag_help
+    switch $_subcmd
+        case sync;                  _wrangle_help_sync
+        case pull;                  _wrangle_help_pull
+        case review-docs;           _wrangle_help_review_docs
+        case import-univ-vars;      _wrangle_help_import_univ_vars
+        case set-parent;            _wrangle_help_set_parent
+        case reset-claude-session;  _wrangle_help_reset_claude_session
+    end
+    exit 0
+end
+
+if test "$_subcmd" = sync
+    if set -q _flag_with_claude; and set -q _flag_suppress_claude
+        echo "$GLYPH_ERR --with-claude and --suppress-claude are mutually exclusive." >&2
+        exit 2
+    end
 end
 
 set -g _dry_run no
@@ -228,10 +384,11 @@ function _with_spinner --argument-names label
     return $rv
 end
 
-# Handle --reset-claude-session up front.
-if set -q _flag_reset_claude_session
+# `wrangle reset-claude-session` — drop the cached session id, exit.
+if test "$_subcmd" = reset-claude-session
     rm -f $claude_session_file
     printf "%s✓%s Cleared cached claude session id. Next claude invocation starts fresh.\n" (_ok) (_rs)
+    exit 0
 end
 
 # Accumulators for the run summary.
@@ -506,9 +663,14 @@ function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cas
     return 0
 end
 
-# ── --set-parent: write branch.<current>.wrangle-parent + exit ──
-if set -q _flag_set_parent
-    set -l target $_flag_set_parent
+# `wrangle set-parent <branch>` — write branch.<current>.wrangle-parent, exit.
+if test "$_subcmd" = set-parent
+    if test (count $argv) -ne 1
+        echo "$GLYPH_ERR set-parent expects exactly one argument (the parent branch name)" >&2
+        echo "  usage: wrangle set-parent <branch>" >&2
+        exit 2
+    end
+    set -l target $argv[1]
     set -l current (git -C $repo rev-parse --abbrev-ref HEAD)
     if test "$current" = main
         echo "$GLYPH_ERR refusing to set a wrangle-parent on main (main is the root)" >&2
@@ -519,15 +681,73 @@ if set -q _flag_set_parent
     exit 0
 end
 
-# ── --pull / --resume-pull: cascade, then exit ──
-if set -q _flag_pull; or set -q _flag_resume_pull
+# `wrangle pull [--resume]` — cascade, exit.
+if test "$_subcmd" = pull
     _header "Parent-chain pull"
-    if set -q _flag_resume_pull
+    if set -q _flag_resume
         _wrangle_pull_chain --resume
     else
         _wrangle_pull_chain
     end
     exit $status
+end
+
+# `wrangle import-univ-vars` — source the exported file, exit.
+if test "$_subcmd" = import-univ-vars
+    set -l export_file $repo/home/.config/fish/exported-univ-vars.fish
+    if not test -f $export_file
+        echo "$GLYPH_ERR No exported-univ-vars.fish found at $export_file." >&2
+        echo "  Capture them first by running \`wrangle sync\` and answering [t]rack on a univ-var prefix." >&2
+        exit 1
+    end
+    _header "Importing universal variables"
+    set -l before_count (count (set -U -L))
+    source $export_file
+    set -l after_count (count (set -U -L))
+    set -l delta (math $after_count - $before_count)
+    echo "  $GLYPH_OK sourced $export_file ($delta new vars set; $after_count total universals now)"
+    exit 0
+end
+
+# `wrangle review-docs` — skip drift entirely, invoke claude on current state.
+# Useful when you opted into claude AFTER making changes (so the normal sync
+# doc-sync path skipped because $_changes was empty), or when you've hand-
+# edited docs and want a sanity check. Runs only the claude pass with recent
+# commit log as context.
+if test "$_subcmd" = review-docs
+    if not command -q claude
+        echo "$GLYPH_ERR review-docs requires the claude CLI." >&2
+        exit 1
+    end
+    _header "Doc review"
+    echo "  Asking claude to review docs against recent repo state..."
+
+    set -l prompt_text "You are claude-code invoked by `wrangle review-docs` at $repo. The user has explicitly asked you to review the repo's documentation against the current state of the repo and recent activity. There are no specific changes from a wrangle run this time — your job is to look at the recent commits and current docs and propose updates if anything is factually wrong, out of date, or incomplete.
+
+The repo has two doc tiers:
+  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free.
+  - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live on the machine-branch (default: `personal`). A common convention is a top-level PERSONAL.md.
+
+You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/.
+
+Be conservative — only act on user-facing consequences.
+
+Recent commit history (last 15 commits):
+"
+    for l in (git -C $repo log --oneline -15 2>/dev/null)
+        set prompt_text "$prompt_text  $l
+"
+    end
+
+    _wrangle_invoke_claude "$prompt_text"
+    set -l rv $status
+    echo ""
+    if test $rv -eq 0
+        echo "  $GLYPH_OK claude finished. `git status` in the repo to see any doc changes."
+    else
+        echo "  $GLYPH_WARN claude exited non-zero ($rv)."
+    end
+    exit $rv
 end
 
 # `$_claude_opt` (on/off) is computed later — right after the first-run
@@ -648,63 +868,6 @@ if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
     end
 end
 
-# ─── --import-univ-vars: short-circuit, source the exported file, exit ──
-if set -q _flag_import_univ_vars
-    set -l export_file $repo/home/.config/fish/exported-univ-vars.fish
-    if not test -f $export_file
-        echo "$GLYPH_ERR No exported-univ-vars.fish found at $export_file." >&2
-        echo "  Capture them first by running wrangle and answering [t]rack on a univ-var prefix." >&2
-        exit 1
-    end
-    _header "Importing universal variables"
-    set -l before_count (count (set -U -L))
-    source $export_file
-    set -l after_count (count (set -U -L))
-    set -l delta (math $after_count - $before_count)
-    echo "  $GLYPH_OK sourced $export_file ($delta new vars set; $after_count total universals now)"
-    exit 0
-end
-
-# ─── --review-docs: short-circuit drift, invoke claude on current state ──
-# Useful when you opted into claude AFTER making changes (so the normal
-# pass-6 path skipped because $_changes was empty), or when you've
-# hand-edited docs and want a sanity check. Skips all drift work; runs
-# only the claude pass with recent commit log as context.
-if set -q _flag_review_docs
-    if not command -q claude
-        echo "$GLYPH_ERR --review-docs requires the claude CLI." >&2
-        exit 1
-    end
-    _header "Doc review (--review-docs)"
-    echo "  Asking claude to review docs against recent repo state..."
-
-    set -l prompt_text "You are claude-code invoked by `wrangle --review-docs` at $repo. The user has explicitly asked you to review the repo's documentation against the current state of the repo and recent activity. There are no specific changes from a wrangle run this time — your job is to look at the recent commits and current docs and propose updates if anything is factually wrong, out of date, or incomplete.
-
-The repo has two doc tiers:
-  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free.
-  - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live on the machine-branch (default: `personal`). A common convention is a top-level PERSONAL.md.
-
-You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/.
-
-Be conservative — only act on user-facing consequences.
-
-Recent commit history (last 15 commits):
-"
-    for l in (git -C $repo log --oneline -15 2>/dev/null)
-        set prompt_text "$prompt_text  $l
-"
-    end
-
-    _wrangle_invoke_claude "$prompt_text"
-    set -l rv $status
-    echo ""
-    if test $rv -eq 0
-        echo "  $GLYPH_OK claude finished. `git status` in the repo to see any doc changes."
-    else
-        echo "  $GLYPH_WARN claude exited non-zero ($rv)."
-    end
-    exit $rv
-end
 
 # ── First-run welcome ─────────────────────────────────────────────────────
 if test "$_first_run" = yes; and test "$_dry_run" = no

@@ -35,7 +35,7 @@ Everything below is idempotent. Safe to re-run on a partially-set-up machine; no
 
 2. **Restore captured universal variables (if your machine-branch has them).** If your machine-branch was previously set up on another machine and `home/.config/fish/exported-univ-vars.fish` is present in the repo, run:
    ```fish
-   wrangle --import-univ-vars
+   wrangle import-univ-vars
    ```
    This restores tide / sponge / other plugin configuration that lives in fish universals rather than files. Skip if this is a fresh machine-branch.
 
@@ -72,19 +72,24 @@ For the full pass-by-pass reference, see **[README.md → User guide](README.md#
 ## Daily use
 
 ```fish
-wrangle                       # interactive — main entry point
-wrangle --pull                # just walk the parent chain (fetch + cascade-merge), exit
-wrangle --resume-pull         # continue a cascade interrupted by a merge conflict
-wrangle --dry-run             # see drift, no prompts, no changes, no commit
-wrangle --force               # re-ask about paths in .dotignore
-wrangle --with-claude         # force-on claude doc review this run
-wrangle --suppress-claude     # force-off claude this run
-wrangle --reset-claude-session  # drop cached claude session id
-wrangle --no-branch-switch    # stay on current branch (don't auto-switch to machine-branch)
-wrangle --import-univ-vars    # restore captured plugin universals on a new machine
-wrangle --review-docs         # invoke claude on current state (no drift required)
-wrangle --set-parent <branch> # declare current branch's wrangle-parent
-wrangle --help                # full reference
+wrangle                                # = wrangle sync (default)
+wrangle sync                           # interactive sync — all 12 passes
+wrangle sync --dry-run                 # see drift, no prompts, no changes, no commit
+wrangle sync --force                   # re-ask about paths in .dotignore
+wrangle sync --with-claude             # force-on claude doc review this run
+wrangle sync --suppress-claude         # force-off claude this run
+wrangle sync --no-branch-switch        # stay on current branch (skip the chain-pull)
+
+wrangle pull                           # just walk the parent chain (fetch + cascade-merge), exit
+wrangle pull --resume                  # continue a cascade interrupted by a merge conflict
+
+wrangle review-docs                    # invoke claude on current state (no drift required)
+wrangle import-univ-vars               # restore captured plugin universals on a new machine
+wrangle set-parent <branch>            # declare current branch's wrangle-parent
+wrangle reset-claude-session           # drop cached claude session id
+
+wrangle help                           # subcommand list + env vars + config keys
+wrangle help <subcommand>              # detailed help for one subcommand
 ```
 
 The repo nags you in three ways from new shells. All are silenceable per-shell or globally via env var:
@@ -117,7 +122,7 @@ The repo itself is untouched. Re-stow any time with `stow --no-folding -t ~ home
 - `~/.cache/dotfiles/pull-nag-state` — per-parent SHA last nagged about (so the pull nag doesn't re-fire for the same commits).
 - `<repo>/.wrangle-changelog` — running log of structural changes (used by claude when enabled).
 - `<repo>/.dotignore`, `<repo>/.brewignore`, `<repo>/.univexport`, `<repo>/.univignore` — ignore/allowlists, tracked on your machine-branch.
-- `<repo>/home/.config/fish/exported-univ-vars.fish` — auto-regenerated snapshot of universals matching `.univexport` patterns. Restore on a new machine with `wrangle --import-univ-vars`.
+- `<repo>/home/.config/fish/exported-univ-vars.fish` — auto-regenerated snapshot of universals matching `.univexport` patterns. Restore on a new machine with `wrangle import-univ-vars`.
 
 ---
 
@@ -128,4 +133,4 @@ For the full branch-model explanation see **[README.md → Branch model](README.
 - **`main`** is framework only — wrangle/bootstrap scripts, ignore-list templates, tests, docs. Shared and semver-tagged.
 - **Your machine-branch** (default `personal`) is your machine state — `.gitconfig`, vim configs, Brewfile, plugin lists, captured universals. Per-user, can chain to other machine-branches (e.g., `work → personal → main`).
 
-Wrangle's Pass 1 walks the parent chain at the start of every run and merges parents into their children, so framework updates flow into your machine-branch automatically. You never need to merge back to `main`. If you want to detach from upstream framework updates for one run, use `wrangle --no-branch-switch`.
+Wrangle's Pass 1 walks the parent chain at the start of every `wrangle sync` run and merges parents into their children, so framework updates flow into your machine-branch automatically. You never need to merge back to `main`. If you want to detach from upstream framework updates for one run, use `wrangle sync --no-branch-switch`.
