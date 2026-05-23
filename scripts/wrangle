@@ -166,6 +166,21 @@ function _log_change --inherit-variable _changes
     set -g _changes $_changes $argv[1]
 end
 
+# Run-abort helper. [q] in any prompt and Ctrl-C both route through here so
+# the entire run exits cleanly — previously [q] only broke the current pass
+# and fell through to the next one, and Ctrl-C was swallowed by `read` and
+# matched the empty-string skip case. Tracked files already moved into home/
+# and .univexport/.univignore edits stay on disk; re-run wrangle to commit.
+function _wrangle_abort --argument-names reason exit_code
+    test -z "$exit_code"; and set exit_code 0
+    echo ""
+    echo "  $GLYPH_DIM $reason — exiting without committing or pushing. Re-run wrangle to commit any tracked changes."
+    exit $exit_code
+end
+function _wrangle_on_sigint --on-signal SIGINT
+    _wrangle_abort interrupted 130
+end
+
 # Claude invocation helper. Single source of truth for model/effort/session-id
 # defaults and the claude CLI flags. Streams text output so the user sees
 # progress in real time. Session ID is owned by us (generated via uuidgen,
@@ -413,9 +428,7 @@ end
 if test (count $yoink_candidates) -gt 0
     echo "$HEAD_OPEN─── Yoink check ───$HEAD_CLOSE"
     echo "Files in home/ but missing from ~ ("(count $yoink_candidates)") — looks like you removed them:"
-    set -l should_quit no
     for rel in $yoink_candidates
-        test "$should_quit" = yes; and break
         echo ""
         echo "    home/$rel"
         while true
@@ -438,8 +451,7 @@ if test (count $yoink_candidates) -gt 0
                     echo "      $GLYPH_DIM skipped"
                     break
                 case q Q quit
-                    set should_quit yes
-                    break
+                    _wrangle_abort quit
                 case '*'
                     echo "      ? '$choice' — answer y/r/s/q"
             end
@@ -472,9 +484,7 @@ if test (count $orphan_symlinks) -gt 0
     echo ""
     echo "$HEAD_OPEN─── Orphan symlinks ───$HEAD_CLOSE"
     echo "Symlinks in ~ pointing into home/ whose targets no longer exist ("(count $orphan_symlinks)"):"
-    set -l should_quit no
     for path in $orphan_symlinks
-        test "$should_quit" = yes; and break
         echo ""
         echo "    $path → "(readlink $path)
         while true
@@ -489,8 +499,7 @@ if test (count $orphan_symlinks) -gt 0
                     echo "      $GLYPH_DIM skipped"
                     break
                 case q Q quit
-                    set should_quit yes
-                    break
+                    _wrangle_abort quit
                 case '*'
                     echo "      ? '$choice' — answer r/s/q"
             end
@@ -630,10 +639,8 @@ end
 
 set -l tracked_count 0
 set -l ignored_count 0
-set -l should_quit no
 
 for rel in $candidates
-    test "$should_quit" = yes; and break
     _show $rel
     if test "$_dry_run" = yes
         continue
@@ -656,10 +663,7 @@ for rel in $candidates
                 echo "  $GLYPH_DIM skipped (will ask again next run)"
                 break
             case q Q quit
-                echo ""
-                echo "Quitting dotfile pass."
-                set should_quit yes
-                break
+                _wrangle_abort quit
             case '*'
                 echo "  ? '$choice' — answer t/i/s/q"
         end
@@ -703,7 +707,6 @@ else
     if test (count $plugin_added) -gt 0
         echo "  Installed but NOT in fish_plugins ("(count $plugin_added)"):"
         for plugin in $plugin_added
-            test "$should_quit" = yes; and break
             echo ""
             echo "    $plugin"
             if test "$_dry_run" = yes
@@ -727,8 +730,7 @@ else
                         echo "      $GLYPH_DIM skipped"
                         break
                     case q Q quit
-                        set should_quit yes
-                        break
+                        _wrangle_abort quit
                     case '*'
                         echo "      ? '$choice' — answer t/i/s/q"
                 end
@@ -736,11 +738,10 @@ else
         end
     end
 
-    if test (count $plugin_missing) -gt 0; and test "$should_quit" = no
+    if test (count $plugin_missing) -gt 0
         echo ""
         echo "  In fish_plugins but NOT installed ("(count $plugin_missing)"):"
         for plugin in $plugin_missing
-            test "$should_quit" = yes; and break
             echo ""
             echo "    $plugin"
             if test "$_dry_run" = yes
@@ -764,8 +765,7 @@ else
                     case s S skip ''
                         break
                     case q Q quit
-                        set should_quit yes
-                        break
+                        _wrangle_abort quit
                     case '*'
                         echo "      ? '$choice' — answer i/r/s/q"
                 end
@@ -886,11 +886,9 @@ if test "$_dry_run" = no
     else
         echo "  Found "(math (count $drift_prefixes) + (count $drift_standalone))" untracked groups/vars."
 
-        set -l should_quit no
 
         # Prompt per prefix-group
         for prefix in $drift_prefixes
-            test "$should_quit" = yes; and break
             # Collect actual vars under this prefix (sample up to 4 for display)
             set -l members
             for name in (set -U -L | awk '{print $1}')
@@ -899,12 +897,11 @@ if test "$_dry_run" = no
                 set -a members $name
             end
             set -l count (count $members)
-            set -l show $count
-            test $show -gt 3; and set show 3
-            set -l sample (string join ", " $members[1..$show])
-            test $count -gt 3; and set sample "$sample, …"
             echo ""
-            echo "    prefix \`$prefix*\` — $count var(s): $sample"
+            echo "    prefix \`$prefix*\` — $count var(s):"
+            for m in $members
+                echo "      $m"
+            end
             while true
                 read -P (_prompt)"    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
                 switch $choice
@@ -917,14 +914,16 @@ if test "$_dry_run" = no
                     case i I ignore
                         echo "$prefix*" >> $univ_ignore_file
                         echo "      $GLYPH_OK added \`$prefix*\` to .univignore"
+                        echo "      $GLYPH_DIM tip: to capture an individual var from this prefix later,"
+                        echo "      $GLYPH_DIM      add its exact name on its own line in .univexport"
+                        echo "      $GLYPH_DIM      ($repo/.univexport — exact names match like patterns)"
                         _log_change "ignored univ-var pattern: $prefix*"
                         break
                     case s S skip ''
                         echo "      $GLYPH_DIM skipped (will ask again next run)"
                         break
                     case q Q quit
-                        set should_quit yes
-                        break
+                        _wrangle_abort quit
                     case '*'
                         echo "      ? '$choice' — answer t/i/s/q"
                 end
@@ -933,7 +932,6 @@ if test "$_dry_run" = no
 
         # Prompt per standalone (no-underscore) var, asking by exact name
         for name in $drift_standalone
-            test "$should_quit" = yes; and break
             echo ""
             echo "    standalone (no prefix): $name = "(string join " " $$name)
             while true
@@ -954,8 +952,7 @@ if test "$_dry_run" = no
                         echo "      $GLYPH_DIM skipped (will ask again next run)"
                         break
                     case q Q quit
-                        set should_quit yes
-                        break
+                        _wrangle_abort quit
                     case '*'
                         echo "      ? '$choice' — answer t/i/s/q"
                 end
@@ -1020,7 +1017,6 @@ else
     if test (count $added) -gt 0
         echo "  Installed locally but NOT in Brewfile ("(count $added)"):"
         for entry in $added
-            test "$should_quit" = yes; and break
             echo ""
             echo "    $entry"
             if test "$_dry_run" = yes
@@ -1065,8 +1061,7 @@ else
                         echo "      $GLYPH_DIM skipped (will ask again next run)"
                         break
                     case q Q quit
-                        set should_quit yes
-                        break
+                        _wrangle_abort quit
                     case '*'
                         echo "      ? '$choice' — answer t/i/s/q"
                 end
@@ -1074,11 +1069,10 @@ else
         end
     end
 
-    if test (count $missing) -gt 0; and test "$should_quit" = no
+    if test (count $missing) -gt 0
         echo ""
         echo "  In Brewfile but NOT installed ("(count $missing)"):"
         for entry in $missing
-            test "$should_quit" = yes; and break
             echo ""
             echo "    $entry"
             if test "$_dry_run" = yes
@@ -1134,8 +1128,7 @@ else
                         echo "      $GLYPH_DIM skipped (will ask again next run)"
                         break
                     case q Q quit
-                        set should_quit yes
-                        break
+                        _wrangle_abort quit
                     case '*'
                         echo "      ? '$choice' — answer i/r/s/q"
                 end
