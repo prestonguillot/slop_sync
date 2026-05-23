@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# bootstrap — set up this dotfiles system on a fresh OR existing macOS machine.
+#
+# Safe by design: nothing here overwrites user files. The only `~` writes are:
+#   - Append fish to /etc/shells (idempotent; only if absent)
+#   - chsh to fish (only if your current shell isn't already fish)
+#   - Stow the framework (creates symlinks for files that don't exist in ~)
+#   - Run `wrangle` for the first sync (interactive; you decide what gets tracked)
+#
+# Re-runnable: every step is idempotent. Safe to run on a machine that's
+# partially set up.
+
+set -eu
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+echo "→ Repo: $REPO_DIR"
+echo
+
+# ── 1. Homebrew ─────────────────────────────────────────────────────────
+if command -v brew >/dev/null 2>&1; then
+    echo "✓ Homebrew already installed"
+else
+    echo "→ Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+
+# Source brew shellenv for the remainder of this script.
+if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+else
+    echo "✗ Homebrew not on PATH after install. Aborting." >&2
+    exit 1
+fi
+
+# ── 2. Minimum bootstrap kit ────────────────────────────────────────────
+# These are the only formulae genesys actually requires:
+#   fish — the shell wrangle/dump-brewfile/scan-secrets are written in
+#   stow — manages the symlinks from home/ into ~
+#   git  — already needed if you cloned this repo, but pin it for clarity
+#   mas  — the only CLI gateway to the Mac App Store; without it, `brew
+#          bundle dump` can't see MAS apps. Idle if you never install one.
+echo
+echo "→ Installing minimum kit (fish, stow, git, mas)..."
+brew install fish stow git mas
+
+FISH_PATH="$(brew --prefix)/bin/fish"
+
+# ── 3. Add fish to /etc/shells ──────────────────────────────────────────
+if grep -qxF "$FISH_PATH" /etc/shells 2>/dev/null; then
+    echo "✓ $FISH_PATH already in /etc/shells"
+else
+    echo "→ Adding $FISH_PATH to /etc/shells (may prompt for sudo)..."
+    echo "$FISH_PATH" | sudo tee -a /etc/shells >/dev/null
+fi
+
+# ── 4. chsh to fish (only if not already) ───────────────────────────────
+CURRENT_SHELL="$(dscl . -read "/Users/$USER" UserShell 2>/dev/null | awk '{print $2}')"
+if [ "$CURRENT_SHELL" = "$FISH_PATH" ]; then
+    echo "✓ Login shell already $FISH_PATH"
+else
+    echo "→ Changing login shell to $FISH_PATH (may prompt for password)..."
+    chsh -s "$FISH_PATH"
+fi
+
+# ── 5. Stow the framework into ~ ────────────────────────────────────────
+echo
+echo "→ Stowing framework files into ~..."
+cd "$REPO_DIR"
+stow --no-folding -t "$HOME" home
+echo "✓ Framework symlinked into ~ (currently just the wrangle integration)"
+
+# ── 6. Bootstrap fisher (optional, but harmless if already present) ─────
+echo
+echo "→ Bootstrapping fisher (fish plugin manager)..."
+fish -c 'if not functions -q fisher
+    curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish | source
+    fisher install jorgebucaran/fisher
+end' || echo "  (fisher bootstrap had issues; install manually if you want plugins)"
+
+# ── 7. Manual checklist ─────────────────────────────────────────────────
+cat <<EOF
+
+────────────────────────────────────────────────────────────
+Bootstrap complete.
+
+Anything else you want this machine to have (tools, dotfiles, GUI apps)
+should be installed/configured normally — \`wrangle\` will detect it and
+walk you through tracking it on the next run.
+
+If you'll be pushing to a private GitHub remote, set up auth in whatever
+way you prefer (osxkeychain helper, ssh, gh CLI, etc.). git alone is fine.
+
+Now launching the first \`wrangle\` run...
+────────────────────────────────────────────────────────────
+
+EOF
+
+# ── 8. Force-run wrangle in a login fish so PATH integration is live ────
+exec "$FISH_PATH" -lc 'wrangle'

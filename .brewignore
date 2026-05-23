@@ -1,0 +1,7 @@
+# Substring patterns. Any line in the auto-dumped Brewfile containing one of
+# these is stripped (along with its preceding `# description` comment).
+# One pattern per line. Lines starting with # are comments.
+#
+# Examples:
+#   "Flighty"                    — strip any line containing "Flighty"
+#   @anthropic-ai/claude-code    — strip the npm claude-code line

@@ -1,0 +1,7 @@
+.DS_Store
+*.bak.*
+
+# wrangle's per-machine changelog: a running log of structural changes,
+# used as a queue for claude doc-review. Machine-local state — different
+# per machine, would cause constant merge conflicts if tracked.
+.wrangle-changelog

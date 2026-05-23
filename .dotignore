@@ -1,0 +1,28 @@
+# Paths (relative to $HOME) that `wrangle` should never ask about.
+# One path per line. Lines starting with # are comments.
+#
+# Note: scripts/wrangle has a built-in skiplist covering the entries below
+# PLUS common noise (.DS_Store, caches, history files). This file is your
+# personal layer on top — add things specific to your taste.
+#
+# The defaults below duplicate the most important built-in skips so they're
+# auditable in git history. You can delete any line; the built-in will still
+# protect you (unless you run `wrangle --force`, which bypasses THIS file but
+# still respects the built-in skiplist).
+
+# ─── Credential / token stores ───────────────────────────────────────────
+.aws                    # AWS CLI credentials
+.azure                  # Azure CLI session
+.gcloud                 # gcloud auth
+.kube                   # kubeconfig with cluster credentials
+.netrc                  # machine login credentials (curl, etc.)
+.npmrc                  # npm auth tokens
+.pgpass                 # postgres passwords
+.password-store         # password-store (pass) entries
+.credentials            # generic credential dumps
+.my.cnf                 # mysql client credentials
+.config/gh              # gh CLI: hosts.yml carries the GitHub OAuth token
+.config/op              # 1Password CLI session
+.config/gcloud          # gcloud auth (XDG-style)
+.config/azure           # azure CLI (XDG-style)
+.config/kubernetes      # kubeconfig (XDG-style)

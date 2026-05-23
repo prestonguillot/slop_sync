@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# run-tests — execute fishtape tests in test/.
+#
+# Requires fishtape: `fisher install jorgebucaran/fishtape`
+# Tests are intentionally NOT a build-blocker — they're a developer tool.
+# wrangle and the rest of the system don't depend on this.
+
+set -eu
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+
+if ! command -v fish >/dev/null 2>&1; then
+    echo "✗ fish is not installed; install it (brew install fish) and re-run." >&2
+    exit 1
+fi
+
+# Check fishtape is loaded in fish.
+if ! fish -c 'functions -q fishtape' 2>/dev/null; then
+    echo "✗ fishtape not installed. Install it once with:" >&2
+    echo "    fish -c 'fisher install jorgebucaran/fishtape'" >&2
+    exit 1
+fi
+
+cd "$REPO_DIR"
+exec fish -c "fishtape test/*.fish"

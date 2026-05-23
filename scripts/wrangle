@@ -1,0 +1,992 @@
+#!/usr/bin/env fish
+# wrangle — the sync command for this dotfiles repo.
+#
+# Passes (in order):
+#   -1. Yoink check       — broken symlinks in ~ → offer to remove from home/
+#    0. Re-stow           — link any new files in home/ to ~
+#    1. Dotfile drift     — untracked files in ~/.config + ~ → [t/i/s/q]
+#    2. Fisher plugin drift — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
+#    3. Brew drift        — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
+#    4. Changelog         — write a summary of changes to .wrangle-changelog
+#    5. Commit + push     — secret-scan staged diff, commit, prompt to push
+#    6. Doc sync (opt-in) — claude-code reviews docs if you've opted in
+#    7. First-run opt-in  — on the very first run, ask about claude integration
+#
+# Prompts use consistent letters:
+#   [t]rack          — capture into the repo
+#   [i]gnore forever — append to .dotignore or .brewignore (track) / install (brew/plugin)
+#   [r]emove         — yoink/drop from the repo
+#   [s]kip           — leave alone; ask again next run
+#   [q]uit
+#
+# Flags:
+#   -d, --dry-run             show drift without prompting (no changes, no commit)
+#   -f, --force               re-ask about paths in .dotignore
+#   --with-claude             force-on claude doc review this run (overrides opt-out file)
+#   --suppress-claude         force-off claude this run (overrides opt-in file)
+#   --reset-claude-session    nuke the cached claude session id; start fresh next run
+#   -h, --help
+#
+# Env vars:
+#   Opt-outs (all features default-on when applicable):
+#     WRANGLE_NO_COMMIT=1          skip auto-commit
+#     WRANGLE_NO_PUSH=1            skip push prompt (won't set unpushed flag)
+#     WRANGLE_NO_PUSH_NAG=1        silence the unpushed-commits nag in new shells
+#     WRANGLE_NO_STALENESS_NAG=1   silence the "wrangle hasn't run in N days" nag
+#     WRANGLE_ALLOW_SECRETS=1      bypass scan-secrets at commit time
+#   Claude tuning (defaults are fast/cheap; raise for heavier reasoning):
+#     WRANGLE_CLAUDE_MODEL=sonnet  override claude model (alias or full name)
+#     WRANGLE_CLAUDE_EFFORT=low    override effort: low|medium|high|xhigh|max
+
+argparse h/help d/dry-run f/force with-claude suppress-claude reset-claude-session review-docs -- $argv
+or exit 1
+
+if set -q _flag_help
+    echo "Usage: wrangle [--dry-run] [--force] [--with-claude|--suppress-claude] [--reset-claude-session] [--review-docs]"
+    echo ""
+    echo "Find dotfile + plugin + brew drift and (by default) prompt what to do with each."
+    echo ""
+    echo "Options:"
+    echo "  -d, --dry-run             show drift without prompting (no changes)"
+    echo "  -f, --force               re-ask about paths already in .dotignore"
+    echo "  --with-claude             force claude doc review this run"
+    echo "  --suppress-claude         skip claude doc review this run"
+    echo "  --reset-claude-session    drop cached claude session id"
+    echo "  --review-docs             skip drift entirely; invoke claude on current state"
+    echo "                            (uses recent commit log as context; ignores opt-in setting)"
+    echo "  -h, --help                show this help"
+    echo ""
+    echo "Opt-out env vars: WRANGLE_NO_COMMIT, WRANGLE_NO_PUSH, WRANGLE_NO_PUSH_NAG, WRANGLE_NO_STALENESS_NAG, WRANGLE_ALLOW_SECRETS"
+    echo "Claude tuning:    WRANGLE_CLAUDE_MODEL (default: sonnet), WRANGLE_CLAUDE_EFFORT (default: low)"
+    exit 0
+end
+
+if set -q _flag_with_claude; and set -q _flag_suppress_claude
+    echo "$GLYPH_ERR --with-claude and --suppress-claude are mutually exclusive." >&2
+    exit 2
+end
+
+set -g _dry_run no
+set -g _force no
+set -q _flag_dry_run; and set -g _dry_run yes
+set -q _flag_force; and set -g _force yes
+
+set -l script_dir (dirname (realpath (status -f)))
+set -l repo (git -C $script_dir rev-parse --show-toplevel 2>/dev/null)
+if test -z "$repo"
+    echo "$GLYPH_ERR wrangle must live inside a git repo (couldn't resolve from $script_dir)."
+    exit 1
+end
+set -l home_subdir $repo/home
+set -l ignore_file $repo/.dotignore
+set -l brew_ignore_file $repo/.brewignore
+set -l changelog_file $repo/.wrangle-changelog
+set -l cache_dir ~/.cache/dotfiles
+set -l last_run_stamp $cache_dir/last-wrangle
+set -l config_file $cache_dir/wrangle-config
+set -l claude_session_file $cache_dir/claude-session-id
+
+mkdir -p $cache_dir
+
+# Detect first run (no last-wrangle timestamp yet on this machine).
+set -g _first_run no
+if not test -f $last_run_stamp
+    set -g _first_run yes
+end
+
+# ─── Color + spinner helpers ──────────────────────────────────────────────
+# Small, opinionated palette. Box-drawing characters (─ ✓ ✗ ⚠ · → …) over
+# emoji per house style. Colors degrade to noops on non-color terminals
+# (fish's set_color handles that).
+function _h     ; set_color --bold; end           # section header
+function _ok    ; set_color green; end            # ✓ success
+function _err   ; set_color red --bold; end       # ✗ error
+function _warn  ; set_color yellow; end           # ⚠ warning
+function _dim   ; set_color brblack; end          # · neutral / hint
+function _info  ; set_color cyan; end             # spinner / status banner
+function _prompt; set_color cyan --bold; end      # interactive prompt letters
+function _rs    ; set_color normal; end           # reset
+
+# Glyph globals: include color + character + reset so we can drop them into
+# existing format strings without restructuring everything.
+set -g GLYPH_OK   (_ok)"✓"(_rs)
+set -g GLYPH_ERR  (_err)"✗"(_rs)
+set -g GLYPH_WARN (_warn)"⚠"(_rs)
+set -g GLYPH_DIM  (_dim)"·"(_rs)
+set -g GLYPH_ARROW (_dim)"→"(_rs)
+set -g HEAD_OPEN  (_h)
+set -g HEAD_CLOSE (_rs)
+
+# Spinner: shows braille animation on a single line until _spinner_stop fires.
+# Skipped in non-interactive sessions (no TTY = nothing to repaint).
+function _spinner_start --argument-names label
+    status is-interactive; or return
+    set -gx _SPINNER_LABEL $label
+    fish -c '
+        set chars ⣾ ⣽ ⣻ ⢿ ⡿ ⣟ ⣯ ⣷
+        set i 1
+        while true
+            printf "\r  \033[36m%s\033[0m %s " "$chars[$i]" "$_SPINNER_LABEL" >&2
+            set i (math "($i % 8) + 1")
+            sleep 0.1
+        end
+    ' &
+    set -g _spinner_pid $last_pid
+end
+
+function _spinner_stop
+    if set -q _spinner_pid
+        kill $_spinner_pid 2>/dev/null
+        wait $_spinner_pid 2>/dev/null
+        printf "\r\033[K" >&2     # CR + erase-to-end-of-line
+        set -e _spinner_pid
+        set -e _SPINNER_LABEL
+    end
+end
+
+# Handle --reset-claude-session up front.
+if set -q _flag_reset_claude_session
+    rm -f $claude_session_file
+    printf "%s✓%s Cleared cached claude session id. Next claude invocation starts fresh.\n" (_ok) (_rs)
+end
+
+# Accumulators for the run summary.
+set -g _changes
+function _log_change --inherit-variable _changes
+    set -g _changes $_changes $argv[1]
+end
+
+# Claude invocation helper. Single source of truth for model/effort/session-id
+# defaults and the claude CLI flags. Streams text output so the user sees
+# progress in real time. Session ID is owned by us (generated via uuidgen,
+# cached at $claude_session_file) — claude does the right thing whether the
+# id is new or already-known.
+function _wrangle_invoke_claude --inherit-variable claude_session_file
+    set -l model sonnet
+    set -l effort low
+    test -n "$WRANGLE_CLAUDE_MODEL"; and set model "$WRANGLE_CLAUDE_MODEL"
+    test -n "$WRANGLE_CLAUDE_EFFORT"; and set effort "$WRANGLE_CLAUDE_EFFORT"
+
+    if not test -f $claude_session_file
+        uuidgen | string lower > $claude_session_file
+    end
+    set -l session_id (cat $claude_session_file)
+
+    echo "  $GLYPH_DIM model=$model · effort=$effort · session="(string sub --start=1 --length=8 -- $session_id)"…"
+    echo ""
+
+    claude -p --output-format text --model $model --effort $effort --session-id $session_id "$argv[1]"
+end
+
+# Determine effective claude opt-in once — used by Pass 5 (commit message) AND
+# Pass 6 (doc review). Computed early so both can read $_claude_opt.
+#   --suppress-claude       → off (overrides file)
+#   --with-claude           → on (overrides file)
+#   WRANGLE_CLAUDE_OPT_IN=yes in $config_file → on
+#   else → off
+set -g _claude_opt off
+if test -f $config_file
+    if grep -q 'WRANGLE_CLAUDE_OPT_IN=yes' $config_file
+        set _claude_opt on
+    end
+end
+set -q _flag_with_claude; and set _claude_opt on
+set -q _flag_suppress_claude; and set _claude_opt off
+
+# Build a commit message. Three paths:
+#   1. Single structural change → use it directly. claude can't improve much.
+#   2. claude opt-in is on (and CLI present) → ask claude to summarize the diff.
+#   3. Fall back to heuristic. For hand-edits (empty $_changes) describes the
+#      file count; for multi-change uses "$first (+N more)".
+function _build_commit_msg --inherit-variable _changes --inherit-variable repo --inherit-variable _claude_opt
+    set -l n (count $_changes)
+
+    if test $n -eq 1
+        echo "wrangle: $_changes[1]"
+        return
+    end
+
+    if test "$_claude_opt" = on; and command -q claude
+        set -l msg (_build_commit_msg_via_claude)
+        if test $status -eq 0; and test -n "$msg"
+            echo $msg
+            return
+        end
+    end
+
+    # Heuristic fallback
+    if test $n -eq 0
+        set -l file_count (git -C $repo diff --cached --name-only 2>/dev/null | count)
+        if test $file_count -eq 1
+            set -l f (git -C $repo diff --cached --name-only | head -1)
+            echo "wrangle: edit $f"
+        else
+            echo "wrangle: sync $file_count file(s)"
+        end
+        return
+    end
+
+    echo "wrangle: $_changes[1] (+"(math $n - 1)" more)"
+end
+
+# Helper for the claude path of _build_commit_msg. Stateless — fresh session
+# every invocation (commit messages don't need conversation continuity, and we
+# don't want to pollute the doc-review session).
+function _build_commit_msg_via_claude --inherit-variable _changes --inherit-variable repo
+    set -l diff (git -C $repo diff --cached 2>/dev/null | head -300)
+    test -z "$diff"; and return 1
+
+    set -l changes_str ""
+    for c in $_changes
+        set changes_str "$changes_str- $c"\n
+    end
+
+    set -l prompt "Write a git commit message for this staged diff in a dotfiles repo.
+
+Wrangle's own log of decisions this run (may be empty if these are hand-edits):
+$changes_str
+Staged diff (first 300 lines):
+\`\`\`
+$diff
+\`\`\`
+
+Rules:
+- One-line subject, lowercase, no trailing period, prefer < 70 chars
+- Describe the change cohesively; if multiple unrelated things, summarize
+- Prefix with 'wrangle: ' if the change was wrangle-initiated; omit for user hand-edits
+- Output ONLY the commit message subject line, no preamble, no explanation, no code fences, no quotes"
+
+    set -l model sonnet
+    set -l effort low
+    test -n "$WRANGLE_CLAUDE_MODEL"; and set model "$WRANGLE_CLAUDE_MODEL"
+    test -n "$WRANGLE_CLAUDE_EFFORT"; and set effort "$WRANGLE_CLAUDE_EFFORT"
+
+    _spinner_start "Asking claude for a commit message…"
+    set -l msg (claude -p --output-format text --model $model --effort $effort "$prompt" 2>/dev/null | string trim)
+    _spinner_stop
+
+    # Strip stray surrounding quotes/backticks claude sometimes adds.
+    set msg (string replace -ra '^["`]+|["`]+$' '' -- $msg)
+    test -z "$msg"; and return 1
+    echo $msg
+end
+
+# ─── --review-docs: short-circuit drift, invoke claude on current state ──
+# Useful when you opted into claude AFTER making changes (so the normal
+# pass-6 path skipped because $_changes was empty), or when you've
+# hand-edited docs and want a sanity check. Skips all drift work; runs
+# only the claude pass with recent commit log as context.
+if set -q _flag_review_docs
+    if not command -q claude
+        echo "$GLYPH_ERR --review-docs requires the claude CLI." >&2
+        exit 1
+    end
+    echo "$HEAD_OPEN─── Doc review (--review-docs) ───$HEAD_CLOSE"
+    echo "  Asking claude to review docs against recent repo state..."
+
+    set -l prompt_text "You are claude-code invoked by \`wrangle --review-docs\` at $repo. The user has explicitly asked you to review the repo's documentation against the current state of the repo and recent activity. There are no specific changes from a wrangle run this time — your job is to look at the recent commits and current docs and propose updates if anything is factually wrong, out of date, or incomplete.
+
+The repo has two doc tiers:
+  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live in the genesys commit and should stay opinion-free.
+  - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live in personal-layer commits. A common convention is a top-level PERSONAL.md.
+
+You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/.
+
+Be conservative — only act on user-facing consequences.
+
+Recent commit history (last 15 commits):
+"
+    for l in (git -C $repo log --oneline -15 2>/dev/null)
+        set prompt_text "$prompt_text  $l
+"
+    end
+
+    _wrangle_invoke_claude "$prompt_text"
+    set -l rv $status
+    echo ""
+    if test $rv -eq 0
+        echo "  $GLYPH_OK claude finished. \`git status\` in the repo to see any doc changes."
+    else
+        echo "  $GLYPH_WARN claude exited non-zero ($rv)."
+    end
+    exit $rv
+end
+
+# ── First-run welcome ─────────────────────────────────────────────────────
+if test "$_first_run" = yes; and test "$_dry_run" = no
+    echo ""
+    echo "$HEAD_OPEN─── First wrangle on this machine ───$HEAD_CLOSE"
+    echo "  I'll walk through what's already in ~ and ask what to track."
+    echo "  Everything is non-destructive — nothing gets moved or modified"
+    echo "  unless you say [t]rack."
+    echo ""
+end
+
+# ─── Pass -1: yoink check ─────────────────────────────────────────────────
+set -l yoink_candidates
+if test "$_dry_run" = no; and test "$_first_run" = no
+    set -l has_stow_links no
+    for f in $HOME/.gitconfig $HOME/.vim/vimrc $HOME/.config/fish/config.fish
+        if test -L $f; and string match -q "*$repo/*" -- (readlink $f)
+            set has_stow_links yes
+            break
+        end
+    end
+    if test "$has_stow_links" = yes
+        for f in (find $home_subdir -type f -not -name .gitkeep 2>/dev/null)
+            set -l rel (string replace -- "$home_subdir/" "" $f)
+            set -l target $HOME/$rel
+            if not test -e $target; and not test -L $target
+                set -a yoink_candidates $rel
+            end
+        end
+    end
+end
+
+if test (count $yoink_candidates) -gt 0
+    echo "$HEAD_OPEN─── Yoink check ───$HEAD_CLOSE"
+    echo "Files in home/ but missing from ~ ("(count $yoink_candidates)") — looks like you removed them:"
+    set -l should_quit no
+    for rel in $yoink_candidates
+        test "$should_quit" = yes; and break
+        echo ""
+        echo "    home/$rel"
+        while true
+            read -P (_prompt)"    [y]oink (remove from repo) / [r]estore (stow back) / [s]kip / [q]uit > "(_rs) choice
+            switch $choice
+                case y Y yoink
+                    rm $home_subdir/$rel
+                    set -l parent (dirname $home_subdir/$rel)
+                    while test "$parent" != "$home_subdir"; and test -z "$(ls -A $parent 2>/dev/null)"
+                        rmdir $parent
+                        set parent (dirname $parent)
+                    end
+                    echo "      $GLYPH_OK removed home/$rel"
+                    _log_change "yoinked dotfile: $rel"
+                    break
+                case r R restore
+                    echo "      $GLYPH_DIM will restore via stow"
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped"
+                    break
+                case q Q quit
+                    set should_quit yes
+                    break
+                case '*'
+                    echo "      ? '$choice' — answer y/r/s/q"
+            end
+        end
+    end
+end
+
+# ─── Pass 0: re-stow ──────────────────────────────────────────────────────
+if command -q stow
+    if test "$_dry_run" = no
+        pushd $repo >/dev/null
+        stow --no-folding -R -t ~ home 2>&1
+        or begin
+            popd >/dev/null
+            echo "$GLYPH_ERR stow re-stow failed. Resolve conflicts (real files at target paths) and re-run."
+            exit 1
+        end
+        popd >/dev/null
+    end
+else
+    echo "$GLYPH_WARN  stow not installed; skipping re-stow."
+end
+
+# ─── Builtin skiplist + user ignores ──────────────────────────────────────
+set -l builtin_skips \
+    .DS_Store .CFUserTextEncoding .Trash .cache .npm .docker .gnupg .ssh \
+    .kuberlr .rd .rustup .local .tldrc .viminfo .lesshst .bash_history \
+    .zsh_history .zsh_sessions .claude .claude.json .npmrc-state .hushlogin \
+    \
+    .aws .azure .gcloud .kube .config/gh .config/op .config/azure \
+    .config/gcloud .config/kubernetes .netrc .npmrc .pgpass .password-store \
+    .credentials .my.cnf
+
+set -l builtin_skip_globs \
+    '.zcompdump*' '*.bak.*' '*.swp' '*.swo' '.netrwhist' \
+    '*.pem' '*.p12' '*.pfx' '*.kdbx' \
+    '*_rsa' '*_rsa.pub' '*_ed25519' '*_ed25519.pub' 'id_*'
+
+set -l user_ignores
+if test -f $ignore_file; and test "$_force" = no
+    set user_ignores (cat $ignore_file | grep -v '^#' | grep -v '^$')
+end
+
+function _is_skipped --inherit-variable builtin_skips --inherit-variable builtin_skip_globs --inherit-variable user_ignores
+    set -l rel $argv[1]
+    for s in $builtin_skips $user_ignores
+        if test "$rel" = "$s"; or string match -q -- "$s/*" $rel
+            return 0
+        end
+    end
+    for g in $builtin_skip_globs
+        if string match -q -- $g (basename $rel); or string match -q -- $g $rel
+            return 0
+        end
+    end
+    return 1
+end
+
+function _is_tracked --inherit-variable home_subdir
+    test -e $home_subdir/$argv[1]
+end
+
+function _show
+    set -l rel $argv[1]
+    set -l full $HOME/$rel
+    echo ""
+    echo "$HEAD_OPEN─── ~/$rel ───$HEAD_CLOSE"
+    if test -d $full
+        set -l n (find $full -type f 2>/dev/null | count)
+        set -l sz (du -sh $full 2>/dev/null | awk '{print $1}')
+        echo "  directory $GLYPH_DIM $n file(s) · $sz"
+        echo "  tree (depth 2):"
+        find $full -maxdepth 2 2>/dev/null | head -15 | sed "s|$HOME/|    ~/|"
+    else if test -f $full
+        set -l sz (du -h $full 2>/dev/null | awk '{print $1}')
+        set -l mt (stat -f '%Sm' $full)
+        echo "  file $GLYPH_DIM $sz · $mt"
+        echo "  preview:"
+        head -8 $full 2>/dev/null | sed 's/^/    /'
+    else
+        echo "  (special / unreadable)"
+    end
+    echo ""
+end
+
+function _track --inherit-variable home_subdir --inherit-variable repo
+    set -l rel $argv[1]
+    set -l src $HOME/$rel
+    set -l dest $home_subdir/$rel
+    mkdir -p (dirname $dest)
+    mv $src $dest
+    or begin
+        echo "  $GLYPH_ERR mv failed; aborting track"
+        return 1
+    end
+    pushd $repo >/dev/null
+    stow --no-folding -R -t ~ home 2>&1
+    set -l rv $status
+    popd >/dev/null
+    if test $rv -eq 0
+        echo "  $GLYPH_OK moved to home/$rel + symlinked back to ~/$rel"
+    else
+        echo "  $GLYPH_WARN moved but stow failed; resolve before committing"
+    end
+end
+
+function _add_ignore --inherit-variable ignore_file
+    echo $argv[1] >> $ignore_file
+    echo "  $GLYPH_OK added to .dotignore"
+end
+
+# ─── Pass 1: dotfile drift ────────────────────────────────────────────────
+set -l candidates
+for f in $HOME/.[A-Za-z0-9]*
+    test -L $f; and continue
+    set -l rel (string replace -- $HOME/ "" $f)
+    if not _is_skipped $rel; and not _is_tracked $rel
+        set -a candidates $rel
+    end
+end
+for f in $HOME/.config/*
+    test -L $f; and continue
+    set -l rel (string replace -- $HOME/ "" $f)
+    if not _is_skipped $rel; and not _is_tracked $rel
+        set -a candidates $rel
+    end
+end
+
+if test (count $candidates) -eq 0
+    echo "No untracked dotfiles in scope."
+else
+    set -l mode_hint
+    test "$_dry_run" = yes; and set mode_hint " (dry run — no prompts)"
+    test "$_force" = yes; and set mode_hint "$mode_hint (--force: ignore list bypassed)"
+    echo "Found "(count $candidates)" untracked path(s)$mode_hint."
+end
+
+set -l tracked_count 0
+set -l ignored_count 0
+set -l should_quit no
+
+for rel in $candidates
+    test "$should_quit" = yes; and break
+    _show $rel
+    if test "$_dry_run" = yes
+        continue
+    end
+    while true
+        read -P (_prompt)"  [t]rack / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+        switch $choice
+            case t T track
+                if _track $rel
+                    set tracked_count (math $tracked_count + 1)
+                    _log_change "tracked dotfile: $rel"
+                end
+                break
+            case i I ignore
+                _add_ignore $rel
+                set ignored_count (math $ignored_count + 1)
+                _log_change "ignored dotfile: $rel"
+                break
+            case s S skip ''
+                echo "  $GLYPH_DIM skipped (will ask again next run)"
+                break
+            case q Q quit
+                echo ""
+                echo "Quitting dotfile pass."
+                set should_quit yes
+                break
+            case '*'
+                echo "  ? '$choice' — answer t/i/s/q"
+        end
+    end
+end
+
+echo ""
+if test "$_dry_run" = yes
+    echo "Summary (dotfiles, dry run): "(count $candidates)" untracked path(s) listed."
+else
+    echo "Summary (dotfiles): $tracked_count tracked, $ignored_count newly ignored."
+end
+
+# ─── Pass 2: fisher plugin drift ──────────────────────────────────────────
+echo ""
+echo "$HEAD_OPEN─── Fisher plugin drift ───$HEAD_CLOSE"
+set -l plugin_changed no
+if not command -q fish; or not functions -q fisher
+    echo "  fisher not installed; skipping."
+else
+    set -l fisher_listed (fisher list 2>/dev/null)
+    set -l plugins_file_path $HOME/.config/fish/fish_plugins
+    set -l plugins_in_file
+    if test -f $plugins_file_path
+        set plugins_in_file (cat $plugins_file_path | grep -v '^#' | grep -v '^$')
+    end
+
+    set -l plugin_added
+    for p in $fisher_listed
+        contains -- $p $plugins_in_file; or set -a plugin_added $p
+    end
+    set -l plugin_missing
+    for p in $plugins_in_file
+        contains -- $p $fisher_listed; or set -a plugin_missing $p
+    end
+
+    if test (count $plugin_added) -eq 0; and test (count $plugin_missing) -eq 0
+        echo "  $GLYPH_OK fisher list matches fish_plugins."
+    end
+
+    if test (count $plugin_added) -gt 0
+        echo "  Installed but NOT in fish_plugins ("(count $plugin_added)"):"
+        for plugin in $plugin_added
+            test "$should_quit" = yes; and break
+            echo ""
+            echo "    $plugin"
+            if test "$_dry_run" = yes
+                continue
+            end
+            while true
+                read -P (_prompt)"    [t]rack (add to fish_plugins) / [i]ignore (uninstall) / [s]kip / [q]uit > "(_rs) choice
+                switch $choice
+                    case t T track
+                        echo $plugin >> $plugins_file_path
+                        set plugin_changed yes
+                        _log_change "tracked fisher plugin: $plugin"
+                        echo "      $GLYPH_OK added to fish_plugins"
+                        break
+                    case i I ignore uninstall
+                        fish -c "fisher remove $plugin"
+                        _log_change "uninstalled fisher plugin: $plugin"
+                        echo "      $GLYPH_OK uninstalled"
+                        break
+                    case s S skip ''
+                        echo "      $GLYPH_DIM skipped"
+                        break
+                    case q Q quit
+                        set should_quit yes
+                        break
+                    case '*'
+                        echo "      ? '$choice' — answer t/i/s/q"
+                end
+            end
+        end
+    end
+
+    if test (count $plugin_missing) -gt 0; and test "$should_quit" = no
+        echo ""
+        echo "  In fish_plugins but NOT installed ("(count $plugin_missing)"):"
+        for plugin in $plugin_missing
+            test "$should_quit" = yes; and break
+            echo ""
+            echo "    $plugin"
+            if test "$_dry_run" = yes
+                continue
+            end
+            while true
+                read -P (_prompt)"    [i]nstall / [r]emove from fish_plugins / [s]kip / [q]uit > "(_rs) choice
+                switch $choice
+                    case i I install
+                        fish -c "fisher install $plugin"
+                        _log_change "installed fisher plugin: $plugin"
+                        break
+                    case r R remove
+                        set -l tmp_p (mktemp)
+                        grep -v -F -x -- "$plugin" $plugins_file_path > $tmp_p
+                        mv $tmp_p $plugins_file_path
+                        set plugin_changed yes
+                        _log_change "removed fisher plugin from fish_plugins: $plugin"
+                        echo "      $GLYPH_OK removed from fish_plugins"
+                        break
+                    case s S skip ''
+                        break
+                    case q Q quit
+                        set should_quit yes
+                        break
+                    case '*'
+                        echo "      ? '$choice' — answer i/r/s/q"
+                end
+            end
+        end
+    end
+end
+
+# ─── Pass 3: brew drift ───────────────────────────────────────────────────
+# Brewfile mutations here are INCREMENTAL: each [t]rack appends one entry,
+# each [r]emove deletes one entry. No end-of-pass re-dump, so [s]kip truly
+# means "defer; ask me again next run." dump-brewfile is still used to
+# DETECT drift (read-only comparison), just not to write back changes.
+echo ""
+echo "$HEAD_OPEN─── Brew drift ───$HEAD_CLOSE"
+if not command -q brew
+    echo "  brew not installed; skipping."
+else
+    set -l tmp_dump (mktemp)
+    _spinner_start "Scanning installed brew state…"
+    $repo/scripts/dump-brewfile $tmp_dump 2>/dev/null
+    _spinner_stop
+
+    set -l brewfile_path $repo/Brewfile
+    set -l tracked_entries
+    if test -f $brewfile_path
+        set tracked_entries (grep -E '^(brew|cask|mas|npm) ' $brewfile_path)
+    end
+    set -l installed_entries (grep -E '^(brew|cask|mas|npm) ' $tmp_dump)
+    # NOTE: tmp_dump stays alive through the loops — [t]rack reads the
+    #       description-comment for the entry out of it. Cleaned up after.
+
+    set -l added
+    for e in $installed_entries
+        contains -- $e $tracked_entries; or set -a added $e
+    end
+    set -l missing
+    for e in $tracked_entries
+        contains -- $e $installed_entries; or set -a missing $e
+    end
+
+    set -l brew_tracked 0
+    set -l brew_ignored 0
+    set -l brew_installed 0
+    set -l brew_removed 0
+
+    if test (count $added) -eq 0; and test (count $missing) -eq 0
+        echo "  $GLYPH_OK Brewfile matches installed state (with .brewignore applied)."
+    end
+
+    # Ensure Brewfile exists so we can append to it (fresh machine, no Brewfile yet).
+    if test "$_dry_run" = no; and not test -f $brewfile_path
+        touch $brewfile_path
+    end
+
+    if test (count $added) -gt 0
+        echo "  Installed locally but NOT in Brewfile ("(count $added)"):"
+        for entry in $added
+            test "$should_quit" = yes; and break
+            echo ""
+            echo "    $entry"
+            if test "$_dry_run" = yes
+                continue
+            end
+            while true
+                read -P (_prompt)"    [t]rack / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+                switch $choice
+                    case t T track
+                        # Look up the description comment from tmp_dump (the
+                        # line immediately preceding $entry, if it's a comment).
+                        set -l ln_raw (grep -n -F -x -- "$entry" $tmp_dump 2>/dev/null | head -1)
+                        set -l desc ""
+                        if test -n "$ln_raw"
+                            set -l ln (string split ':' -- $ln_raw)[1]
+                            if test "$ln" -gt 1
+                                set -l prev_line (sed -n (math $ln - 1)"p" $tmp_dump)
+                                if string match -q '#*' -- "$prev_line"
+                                    set desc $prev_line
+                                end
+                            end
+                        end
+                        if test -n "$desc"
+                            echo $desc >> $brewfile_path
+                        end
+                        echo $entry >> $brewfile_path
+                        set brew_tracked (math $brew_tracked + 1)
+                        _log_change "tracked brew: $entry"
+                        echo "      $GLYPH_OK appended to Brewfile"
+                        break
+                    case i I ignore
+                        set -l pat (string match -r '"[^"]+"' -- $entry)[1]
+                        if test -z "$pat"
+                            set pat $entry
+                        end
+                        echo $pat >> $brew_ignore_file
+                        echo "      $GLYPH_OK added $pat to .brewignore"
+                        set brew_ignored (math $brew_ignored + 1)
+                        _log_change "brew-ignored: $pat"
+                        break
+                    case s S skip ''
+                        echo "      $GLYPH_DIM skipped (will ask again next run)"
+                        break
+                    case q Q quit
+                        set should_quit yes
+                        break
+                    case '*'
+                        echo "      ? '$choice' — answer t/i/s/q"
+                end
+            end
+        end
+    end
+
+    if test (count $missing) -gt 0; and test "$should_quit" = no
+        echo ""
+        echo "  In Brewfile but NOT installed ("(count $missing)"):"
+        for entry in $missing
+            test "$should_quit" = yes; and break
+            echo ""
+            echo "    $entry"
+            if test "$_dry_run" = yes
+                continue
+            end
+            while true
+                read -P (_prompt)"    [i]nstall / [r]emove from Brewfile / [s]kip / [q]uit > "(_rs) choice
+                switch $choice
+                    case i I install
+                        set -l type (string split ' ' -- $entry)[1]
+                        set -l name (string match -r '"[^"]+"' -- $entry)[1]
+                        set -l name_unquoted (string trim --chars='"' -- $name)
+                        switch $type
+                            case brew
+                                brew install $name_unquoted
+                            case cask
+                                brew install --cask $name_unquoted
+                            case mas
+                                set -l id (string match -r 'id:\s*(\d+)' -- $entry)[2]
+                                mas install $id
+                            case npm
+                                npm install -g $name_unquoted
+                        end
+                        if test $status -eq 0
+                            set brew_installed (math $brew_installed + 1)
+                            _log_change "installed: $entry"
+                        end
+                        break
+                    case r R remove
+                        # Locate the entry's line in Brewfile, delete it +
+                        # preceding description comment if present.
+                        set -l ln_raw (grep -n -F -x -- "$entry" $brewfile_path 2>/dev/null | head -1)
+                        if test -z "$ln_raw"
+                            echo "      $GLYPH_WARN couldn't find that line in Brewfile; nothing removed"
+                            break
+                        end
+                        set -l ln (string split ':' -- $ln_raw)[1]
+                        set -l to_delete $ln
+                        if test "$ln" -gt 1
+                            set -l prev_line (sed -n (math $ln - 1)"p" $brewfile_path)
+                            if string match -q '#*' -- "$prev_line"
+                                set to_delete (math $ln - 1)","$ln
+                            end
+                        end
+                        set -l tmp_bf (mktemp)
+                        sed "$to_delete""d" $brewfile_path > $tmp_bf
+                        mv $tmp_bf $brewfile_path
+                        set brew_removed (math $brew_removed + 1)
+                        _log_change "removed from Brewfile: $entry"
+                        echo "      $GLYPH_OK removed from Brewfile"
+                        break
+                    case s S skip ''
+                        echo "      $GLYPH_DIM skipped (will ask again next run)"
+                        break
+                    case q Q quit
+                        set should_quit yes
+                        break
+                    case '*'
+                        echo "      ? '$choice' — answer i/r/s/q"
+                end
+            end
+        end
+    end
+
+    rm -f $tmp_dump
+
+    echo ""
+    if test "$_dry_run" = yes
+        echo "Summary (brew, dry run): "(count $added)" untracked, "(count $missing)" missing."
+    else
+        echo "Summary (brew): $brew_tracked tracked, $brew_ignored ignored, $brew_installed installed, $brew_removed removed."
+    end
+end
+
+# ─── Touch timestamp ──────────────────────────────────────────────────────
+if test "$_dry_run" = no
+    touch $last_run_stamp
+end
+
+# ─── Pass 4: changelog ────────────────────────────────────────────────────
+if test "$_dry_run" = no; and test (count $_changes) -gt 0
+    for c in $_changes
+        echo (date -Iseconds)" $c" >> $changelog_file
+    end
+end
+
+# ─── Pass 5: commit + push ────────────────────────────────────────────────
+set -g _committed no
+if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
+    pushd $repo >/dev/null
+    if test (git status --porcelain | count) -gt 0
+        echo ""
+        echo "$HEAD_OPEN─── Commit ───$HEAD_CLOSE"
+        git add -A
+
+        if test -z "$WRANGLE_ALLOW_SECRETS"
+            set -l secret_hits (git diff --cached | $repo/scripts/scan-secrets)
+            if test (count $secret_hits) -gt 0
+                echo ""
+                echo "$GLYPH_ERR SECRET-LIKE PATTERNS in staged diff — refusing to commit:"
+                for h in $secret_hits
+                    echo "    $h"
+                end
+                echo ""
+                echo "Either remove the offending content, or bypass with WRANGLE_ALLOW_SECRETS=1 and re-run."
+                echo "To unstage: cd $repo && git reset"
+                popd >/dev/null
+                exit 1
+            end
+        end
+
+        set -l commit_msg (_build_commit_msg)
+        git commit -m "$commit_msg"
+        set -g _committed yes
+        echo "  $GLYPH_OK committed: $commit_msg"
+
+        if test -z "$WRANGLE_NO_PUSH"; and test -n "(git remote)"
+            echo ""
+            while true
+                read -P (_prompt)"  Push to "(git remote | head -1)"? [y/N] > "(_rs) push_choice
+                switch $push_choice
+                    case y Y yes
+                        _spinner_start "Pushing to "(git remote | head -1)"…"
+                        git push 2>&1
+                        set -l push_rv $status
+                        _spinner_stop
+                        if test $push_rv -eq 0
+                            rm -f $cache_dir/unpushed
+                            echo "  $GLYPH_OK pushed"
+                        else
+                            echo "  $GLYPH_WARN push failed; flagging for nag"
+                            touch $cache_dir/unpushed
+                        end
+                        break
+                    case n N no ''
+                        touch $cache_dir/unpushed
+                        echo "  $GLYPH_DIM skipped. New shells will nag until you push (silence with WRANGLE_NO_PUSH_NAG=1)."
+                        break
+                    case '*'
+                        echo "  ? '$push_choice' — y or n"
+                end
+            end
+        end
+    end
+    popd >/dev/null
+end
+
+# ─── Pass 6: claude-code doc review (opt-in) ──────────────────────────────
+# $_claude_opt was computed near the top so the commit-message path could
+# also use it. Reusing here.
+if test "$_dry_run" = no; and test (count $_changes) -gt 0; and test "$_claude_opt" = on
+    if not command -q claude
+        echo "  $GLYPH_DIM claude not installed; skipping doc review."
+    else
+        echo ""
+        echo "$HEAD_OPEN─── Doc sync (claude) ───$HEAD_CLOSE"
+
+        # Build context: changes from this run + any pending from prior runs.
+        set -l prompt_text "You are claude-code invoked by \`wrangle\` (the dotfiles repo's sync command) at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
+
+The repo has two documentation tiers:
+  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live in the genesys commit and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
+  - PERSONAL docs describe the user's specific layer on top: post-bootstrap manual steps, tool-specific auth flows, machine-specific setup notes. These live in personal-layer commits. Create or update them when the personal layer (Brewfile, tracked dotfiles, fish_plugins) adds something with known post-install or first-time-setup needs that aren't documented elsewhere. A common convention is a top-level PERSONAL.md, but you can split into multiple docs if it makes sense.
+
+You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/. Those are managed by other parts of the system.
+
+Be conservative: only act on changes that have real user-facing setup or behavior consequences. Skip cosmetic or trivial diffs.
+
+Changes from this wrangle run:
+"
+        for c in $_changes
+            set prompt_text "$prompt_text- $c
+"
+        end
+        set prompt_text "$prompt_text
+Recent commit history (for context — last 10 commits):
+"
+        set -l recent_log (git -C $repo log --oneline -10 2>/dev/null)
+        for l in $recent_log
+            set prompt_text "$prompt_text  $l
+"
+        end
+
+        _wrangle_invoke_claude "$prompt_text"
+        set -l rv $status
+        echo ""
+        if test $rv -eq 0
+            echo "  $GLYPH_OK claude finished. Review docs and re-commit if it changed anything."
+        else
+            echo "  $GLYPH_WARN claude exited non-zero ($rv)."
+        end
+    end
+end
+
+# ─── Pass 7: claude opt-in question ──────────────────────────────────────
+# Fires the first time wrangle is run *after the opt-in feature exists* —
+# i.e., whenever the config file is missing. Decoupled from $_first_run
+# (which only catches truly-fresh machines) so existing users get asked
+# the first time they run a wrangle version that knows about the question.
+if test "$_dry_run" = no; and not test -f $config_file
+    echo ""
+    echo "$HEAD_OPEN─── One-time question ───$HEAD_CLOSE"
+    echo "  wrangle can optionally use claude-code (the \`claude\` CLI) after each run"
+    echo "  to review the repo's docs (framework and personal-layer) for changes that"
+    echo "  need reflecting. It runs only when wrangle has actual changes, uses a"
+    echo "  persistent session to avoid re-reading the repo each time, and obeys"
+    echo "  --with-claude / --suppress-claude flags on individual runs."
+    echo ""
+    set -l answer no
+    while true
+        read -P (_prompt)"  Enable claude doc review by default on this machine? [y/N] > "(_rs) choice
+        switch $choice
+            case y Y yes
+                set answer yes
+                break
+            case n N no ''
+                set answer no
+                break
+            case '*'
+                echo "  ? '$choice' — y or n"
+        end
+    end
+    echo "WRANGLE_CLAUDE_OPT_IN=$answer" > $config_file
+    echo "  $GLYPH_OK Saved to $config_file (edit that file to change later)."
+end

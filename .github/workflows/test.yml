@@ -1,0 +1,31 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # allow manual trigger via the Actions UI
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install fish
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fish
+
+      - name: Install fisher + fishtape
+        run: |
+          fish -c '
+            curl -sL https://raw.githubusercontent.com/jorgebucaran/fisher/main/functions/fisher.fish |
+              source && fisher install jorgebucaran/fisher jorgebucaran/fishtape
+          '
+
+      - name: Run tests
+        run: ./scripts/run-tests

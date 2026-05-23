@@ -1,0 +1,99 @@
+#!/usr/bin/env fish
+# dump-brewfile — `brew bundle dump --describe --force` with .brewignore filtering.
+#
+# Usage:
+#   dump-brewfile [TARGET]              # normal: dump from brew, filter, write to TARGET
+#   dump-brewfile --input INPUT TARGET  # testing: filter INPUT instead of calling brew
+#   TARGET defaults to <repo>/Brewfile.
+#
+# .brewignore contains substring patterns (one per line). Any line in the dumped
+# Brewfile containing a pattern as a substring is removed, along with the
+# preceding `# description` comment if any.
+
+argparse h/help input= ignore-file= -- $argv
+or exit 1
+
+if set -q _flag_help
+    echo "Usage: dump-brewfile [TARGET]"
+    echo "       dump-brewfile [--input INPUT] [--ignore-file FILE] TARGET"
+    echo ""
+    echo "Wraps 'brew bundle dump --describe --force --file=TARGET' with .brewignore filtering."
+    echo "  --input FILE        filter FILE instead of calling brew (for tests)"
+    echo "  --ignore-file FILE  use FILE as ignore list instead of <repo>/.brewignore"
+    echo "TARGET defaults to <repo>/Brewfile."
+    exit 0
+end
+
+set -l script_dir (dirname (realpath (status -f)))
+set -l repo (git -C $script_dir rev-parse --show-toplevel 2>/dev/null)
+if test -z "$repo"
+    echo "✗ dump-brewfile must run inside a git repo."
+    exit 1
+end
+
+set -l target $argv[1]
+test -z "$target"; and set target $repo/Brewfile
+
+set -l ignore_file $repo/.brewignore
+set -q _flag_ignore_file; and set ignore_file $_flag_ignore_file
+set -l tmp_dump (mktemp)
+
+if set -q _flag_input
+    # Test mode — use the provided file as input instead of asking brew.
+    if not test -f $_flag_input
+        echo "✗ --input file not found: $_flag_input" >&2
+        rm -f $tmp_dump
+        exit 1
+    end
+    cp $_flag_input $tmp_dump
+else
+    brew bundle dump --describe --force --file $tmp_dump
+    or begin
+        rm -f $tmp_dump
+        exit 1
+    end
+end
+
+# No ignore file or empty? Just hand over the raw dump.
+if not test -f $ignore_file
+    mv $tmp_dump $target
+    exit 0
+end
+
+set -l patterns (cat $ignore_file | grep -v '^#' | grep -v '^$')
+if test (count $patterns) -eq 0
+    mv $tmp_dump $target
+    exit 0
+end
+
+# Filter: drop any line containing a pattern as substring; drop its preceding
+# comment line too (brew bundle dump --describe emits "# desc\nbrew "x"" pairs).
+set -l tmp_filtered (mktemp)
+set -l pending ""
+while read -l line
+    if string match -qr '^#' -- "$line"
+        test -n "$pending"; and echo "$pending" >> $tmp_filtered
+        set pending $line
+        continue
+    end
+
+    set -l matched no
+    for p in $patterns
+        if string match -q "*$p*" -- "$line"
+            set matched yes
+            break
+        end
+    end
+
+    if test "$matched" = yes
+        set pending ""  # also drop the held comment
+    else
+        test -n "$pending"; and echo "$pending" >> $tmp_filtered
+        echo "$line" >> $tmp_filtered
+        set pending ""
+    end
+end < $tmp_dump
+test -n "$pending"; and echo "$pending" >> $tmp_filtered
+
+mv $tmp_filtered $target
+rm -f $tmp_dump
