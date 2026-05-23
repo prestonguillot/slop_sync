@@ -35,7 +35,7 @@ else
 fi
 
 # ── 2. Minimum bootstrap kit ────────────────────────────────────────────
-# These are the only formulae genesys actually requires:
+# These are the only formulae the framework itself actually requires:
 #   fish — the shell wrangle/dump-brewfile/scan-secrets are written in
 #   stow — manages the symlinks from home/ into ~
 #   git  — already needed if you cloned this repo, but pin it for clarity
