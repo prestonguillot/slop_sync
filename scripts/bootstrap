@@ -64,14 +64,40 @@ else
     chsh -s "$FISH_PATH"
 fi
 
-# ── 5. Stow the framework into ~ ────────────────────────────────────────
+# ── 5. Set up the `personal` branch ─────────────────────────────────────
+# Framework changes live on `main` (shared, public-shippable). All of YOUR
+# machine-specific changes (dotfiles, Brewfile, plugin config) live on a
+# `personal` branch. wrangle commits exclusively to `personal`.
+#
+# Three cases:
+#   - Already on a `personal` branch locally → no-op.
+#   - `personal` exists on the remote (re-imaging the same machine, your
+#     own previously-pushed personal) → check it out tracking origin.
+#   - No `personal` anywhere → create a fresh one from main.
+echo
+cd "$REPO_DIR"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT_BRANCH" = "personal" ]; then
+    echo "✓ Already on personal branch"
+elif git show-ref --verify --quiet refs/heads/personal; then
+    echo "→ Switching to existing local personal branch..."
+    git checkout personal
+elif git ls-remote --exit-code --heads origin personal >/dev/null 2>&1; then
+    echo "→ Checking out personal from origin..."
+    git checkout -b personal origin/personal
+else
+    echo "→ Creating fresh personal branch from main..."
+    echo "  (all your machine-specific changes will live here; main stays framework-only)"
+    git checkout -b personal main
+fi
+
+# ── 6. Stow the framework into ~ ────────────────────────────────────────
 echo
 echo "→ Stowing framework files into ~..."
-cd "$REPO_DIR"
 stow --no-folding -t "$HOME" home
-echo "✓ Framework symlinked into ~ (currently just the wrangle integration)"
+echo "✓ Framework symlinked into ~"
 
-# ── 6. Bootstrap fisher (optional, but harmless if already present) ─────
+# ── 7. Bootstrap fisher (optional, but harmless if already present) ─────
 echo
 echo "→ Bootstrapping fisher (fish plugin manager)..."
 fish -c 'if not functions -q fisher
@@ -79,23 +105,39 @@ fish -c 'if not functions -q fisher
     fisher install jorgebucaran/fisher
 end' || echo "  (fisher bootstrap had issues; install manually if you want plugins)"
 
-# ── 7. Manual checklist ─────────────────────────────────────────────────
+# ── 8. Manual checklist ─────────────────────────────────────────────────
+UNIV_FILE="$REPO_DIR/home/.config/fish/exported-univ-vars.fish"
+UNIV_LINE=""
+if [ -f "$UNIV_FILE" ]; then
+    UNIV_LINE="
+If you want to restore previously-captured fish universal variables
+(tide / sponge / other plugin config that doesn't live in files), run:
+
+  wrangle --import-univ-vars
+"
+fi
+
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
 Bootstrap complete.
 
+You're now on the \`personal\` branch. wrangle will commit your changes
+here. Framework updates from upstream live on \`main\` — wrangle auto-
+merges main into personal at the start of each run.
+
 Anything else you want this machine to have (tools, dotfiles, GUI apps)
 should be installed/configured normally — \`wrangle\` will detect it and
 walk you through tracking it on the next run.
 
-If you'll be pushing to a private GitHub remote, set up auth in whatever
-way you prefer (osxkeychain helper, ssh, gh CLI, etc.). git alone is fine.
+If you'll be pushing personal to a remote, set up auth in whatever way
+you prefer (osxkeychain helper, ssh, gh CLI, etc.). On first push,
+git will prompt with: \`git push --set-upstream origin personal\`.${UNIV_LINE}
 
 Now launching the first \`wrangle\` run...
 ────────────────────────────────────────────────────────────
 
 EOF
 
-# ── 8. Force-run wrangle in a login fish so PATH integration is live ────
+# ── 9. Force-run wrangle in a login fish so PATH integration is live ────
 exec "$FISH_PATH" -lc 'wrangle'
