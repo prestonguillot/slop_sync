@@ -3,11 +3,12 @@
 # Each non-comment line is either:
 #   - An exact path or directory prefix (e.g., `.aws` matches `.aws` itself
 #     and anything beneath `.aws/`).
-#   - A fish-style glob (any line containing `*`, `?`, or `[`) matched against
-#     both the basename and the full relative path (e.g., `*.pem` skips
-#     `id_thing.pem` and `.config/foo/bar.pem`).
+#   - A glob (any line containing `*`) matched against both the basename and
+#     the full relative path (e.g., `*.pem` skips `id_thing.pem` and
+#     `.config/foo/bar.pem`). Only `*` is a wildcard — `?` and `[...]` are
+#     taken literally.
 #
-# `#` comments are stripped (trailing comments OK).
+# `#` comments are stripped (trailing comments OK; leading whitespace too).
 # `wrangle sync --force` bypasses this file ENTIRELY — including the credential
 # entries below. The pre-commit secret-scan still runs in --force mode and
 # will refuse to commit AWS/GitHub/Stripe/OpenAI/Anthropic keys, JWTs, and
