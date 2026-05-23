@@ -83,7 +83,7 @@ end
 
 # Reject unknown subcommands.
 switch $_subcmd
-    case sync pull review-docs import-univ-vars set-parent reset-claude-session help
+    case sync pull push review-docs import-univ-vars set-parent reset-claude-session help
         # known — handled below
     case '*'
         echo "wrangle: unknown subcommand: $_subcmd" >&2
@@ -114,7 +114,7 @@ switch $_subcmd
         set -q _flag_with_claude;      and _wrangle_reject_flag pull --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag pull --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag pull --no-branch-switch
-    case review-docs import-univ-vars set-parent reset-claude-session help
+    case push review-docs import-univ-vars set-parent reset-claude-session help
         # No flags besides --help.
         set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
         set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
@@ -131,6 +131,7 @@ function _wrangle_help_top
     echo "Subcommands:"
     echo "  sync                  detect drift + commit + push (the main workflow)"
     echo "  pull [--resume]       fetch + cascade-merge along the parent chain"
+    echo "  push                  push the current branch to origin (preview first)"
     echo "  review-docs           skip drift; have claude review docs against recent commits"
     echo "  import-univ-vars      restore captured fish universals from exported-univ-vars.fish"
     echo "  set-parent <branch>   declare current branch's wrangle-parent in git config"
@@ -185,6 +186,18 @@ function _wrangle_help_pull
     echo "  --resume    continue a cascade that was interrupted by a merge conflict"
 end
 
+function _wrangle_help_push
+    echo "Usage: wrangle push"
+    echo ""
+    echo "Push the current branch to origin. Shows a brief preview of the unpushed"
+    echo "commits and their diffstat first, then pushes (no y/N prompt — typing"
+    echo "the subcommand IS the decision). Use this when the shell-start unpushed"
+    echo "nag fires, or after declining `[N]o` to the push prompt in `wrangle sync`."
+    echo ""
+    echo "If the branch has no upstream yet, git's first push will prompt with the"
+    echo "usual `git push --set-upstream origin <branch>` suggestion."
+end
+
 function _wrangle_help_review_docs
     echo "Usage: wrangle review-docs"
     echo ""
@@ -232,6 +245,7 @@ if test "$_subcmd" = help
         switch $argv[1]
             case sync;                  _wrangle_help_sync
             case pull;                  _wrangle_help_pull
+            case push;                  _wrangle_help_push
             case review-docs;           _wrangle_help_review_docs
             case import-univ-vars;      _wrangle_help_import_univ_vars
             case set-parent;            _wrangle_help_set_parent
@@ -248,6 +262,7 @@ if set -q _flag_help
     switch $_subcmd
         case sync;                  _wrangle_help_sync
         case pull;                  _wrangle_help_pull
+        case push;                  _wrangle_help_push
         case review-docs;           _wrangle_help_review_docs
         case import-univ-vars;      _wrangle_help_import_univ_vars
         case set-parent;            _wrangle_help_set_parent
@@ -646,7 +661,7 @@ function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cas
             echo ""
             echo "  Resolve, then:"
             echo "    git add <files> && git commit"
-            echo "    wrangle --resume-pull"
+            echo "    wrangle pull --resume"
             popd >/dev/null
             return 1
         end
@@ -664,6 +679,98 @@ function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cas
     _wrangle_clear_cascade_state
     popd >/dev/null
     return 0
+end
+
+# Run the push step. Mode: 'prompt' (sync style — show preview + y/N/d loop)
+# or 'immediate' (push subcommand style — preview, then push without asking).
+# Returns the git push exit status (or 0 if nothing to push).
+function _wrangle_do_push --inherit-variable repo --argument-names mode
+    pushd $repo >/dev/null
+    set -l remote (git remote | head -1)
+    if test -z "$remote"
+        echo "  $GLYPH_DIM no remote configured; nothing to push"
+        popd >/dev/null
+        return 0
+    end
+
+    set -l branch (git rev-parse --abbrev-ref HEAD)
+    set -l upstream_exists no
+    git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; and set upstream_exists yes
+
+    set -l unpushed 0
+    if test $upstream_exists = yes
+        set unpushed (git rev-list --count '@{u}..HEAD' 2>/dev/null)
+    else
+        set unpushed (git rev-list --count HEAD 2>/dev/null)
+    end
+
+    if test $unpushed -eq 0
+        echo "  $GLYPH_OK already up to date with $remote/$branch"
+        popd >/dev/null
+        return 0
+    end
+
+    # Preview block (same for both modes).
+    if test $upstream_exists = yes
+        echo "  "(_n $unpushed)" commit(s) ahead of "(_name "$remote/$branch")":"
+        git --no-pager log --color=always --pretty='    %C(yellow)%h%Creset %s' '@{u}..HEAD'
+        echo ""
+        echo "  Changed files:"
+        git --no-pager diff --stat --color=always '@{u}..HEAD' | sed 's/^/    /'
+    else
+        echo "  Branch "(_name $branch)" has no upstream yet — first push will set it on "(_name $remote)"."
+        echo "  Last commit:"
+        git --no-pager log -1 --color=always --pretty='    %C(yellow)%h%Creset %s'
+    end
+
+    if test "$mode" = immediate
+        # Push without prompting — user typed the subcommand, that IS the decision.
+        echo ""
+        _spinner_start "Pushing to $remote…"
+        git push 2>&1
+        set -l push_rv $status
+        _spinner_stop
+        if test $push_rv -eq 0
+            echo "  $GLYPH_OK pushed"
+        else
+            echo "  $GLYPH_WARN push failed"
+        end
+        popd >/dev/null
+        return $push_rv
+    end
+
+    # Prompt mode (sync's Pass 12). Loop on [d]iff, return on y/n.
+    while true
+        echo ""
+        read -P (_prompt)"  Push to $remote? [y]es / [N]o / [d]iff (full) > "(_rs) push_choice
+        switch $push_choice
+            case d D diff
+                if test $upstream_exists = yes
+                    git --no-pager diff --color=always '@{u}..HEAD' | less -R
+                else
+                    git log -p --color=always | less -R
+                end
+                # loop back to re-prompt
+            case y Y yes
+                _spinner_start "Pushing to $remote…"
+                git push 2>&1
+                set -l push_rv $status
+                _spinner_stop
+                if test $push_rv -eq 0
+                    echo "  $GLYPH_OK pushed"
+                else
+                    echo "  $GLYPH_WARN push failed"
+                end
+                popd >/dev/null
+                return $push_rv
+            case n N no ''
+                echo "  $GLYPH_DIM skipped"
+                popd >/dev/null
+                return 0
+            case '*'
+                echo "  ? '$push_choice' — y / n / d"
+        end
+    end
 end
 
 # `wrangle set-parent <branch>` — write branch.<current>.wrangle-parent, exit.
@@ -692,6 +799,13 @@ if test "$_subcmd" = pull
     else
         _wrangle_pull_chain
     end
+    exit $status
+end
+
+# `wrangle push` — push current branch to origin (preview, no prompt), exit.
+if test "$_subcmd" = push
+    _header "Push"
+    _wrangle_do_push immediate
     exit $status
 end
 
@@ -1879,72 +1993,17 @@ Recent commit history (for context — last 10 commits):
     end
 end
 
-# ─── Pass 12: push (with preview) ────────────────────────────────────────
-# Shows the unpushed-commit log + file stat before prompting, with [d]iff to
-# expand into the full git diff via less. Split out from the commit pass so
-# doc-sync can interject its own commit between the two.
+# ─── Pass 12: push (with preview + y/N/d prompt) ─────────────────────────
+# Split out from the commit pass so doc-sync can interject its own commit
+# between the two. Calls _wrangle_do_push in 'prompt' mode (show preview, ask
+# before pushing); the `wrangle push` subcommand calls it in 'immediate' mode.
 if test "$_dry_run" = no; and test -z "$WRANGLE_NO_PUSH"
     pushd $repo >/dev/null
-    set -l remote (git remote | head -1)
-    if test -n "$remote"
-        set -l branch (git rev-parse --abbrev-ref HEAD)
-        set -l upstream_exists no
-        git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; and set upstream_exists yes
-
-        set -l unpushed 0
-        if test $upstream_exists = yes
-            set unpushed (git rev-list --count '@{u}..HEAD' 2>/dev/null)
-        else
-            # No upstream yet — treat all branch commits as "to push" for preview.
-            set unpushed (git rev-list --count HEAD 2>/dev/null)
-        end
-
-        if test $unpushed -gt 0
-            echo ""
-            _header "Push"
-            echo ""
-            if test $upstream_exists = yes
-                echo "  "(_n $unpushed)" commit(s) ahead of "(_name "$remote/$branch")":"
-                git --no-pager log --color=always --pretty='    %C(yellow)%h%Creset %s' '@{u}..HEAD'
-                echo ""
-                echo "  Changed files:"
-                git --no-pager diff --stat --color=always '@{u}..HEAD' | sed 's/^/    /'
-            else
-                echo "  Branch "(_name $branch)" has no upstream yet — first push will set it on "(_name $remote)"."
-                echo "  Last commit:"
-                git --no-pager log -1 --color=always --pretty='    %C(yellow)%h%Creset %s'
-            end
-
-            while true
-                echo ""
-                read -P (_prompt)"  Push to $remote? [y]es / [N]o / [d]iff (full) > "(_rs) push_choice
-                switch $push_choice
-                    case d D diff
-                        if test $upstream_exists = yes
-                            git --no-pager diff --color=always '@{u}..HEAD' | less -R
-                        else
-                            git log -p --color=always | less -R
-                        end
-                        # loop back to re-prompt
-                    case y Y yes
-                        _spinner_start "Pushing to $remote…"
-                        git push 2>&1
-                        set -l push_rv $status
-                        _spinner_stop
-                        if test $push_rv -eq 0
-                            echo "  $GLYPH_OK pushed"
-                        else
-                            echo "  $GLYPH_WARN push failed (shells will nag; silence with WRANGLE_NO_PUSH_NAG=1)"
-                        end
-                        break
-                    case n N no ''
-                        echo "  $GLYPH_DIM skipped. New shells will nag until you push (silence with WRANGLE_NO_PUSH_NAG=1)."
-                        break
-                    case '*'
-                        echo "  ? '$push_choice' — y / n / d"
-                end
-            end
-        end
+    set -l _unpushed (git rev-list --count '@{u}..HEAD' 2>/dev/null)
+    if test -n "$_unpushed"; and test $_unpushed -gt 0
+        echo ""
+        _header "Push"
+        _wrangle_do_push prompt
     end
     popd >/dev/null
 end
