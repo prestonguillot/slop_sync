@@ -356,9 +356,13 @@ function _name
 end
 
 # Spinner: shows braille animation on a single line until _spinner_stop fires.
-# Skipped in non-interactive sessions (no TTY = nothing to repaint).
+# Skipped if stderr isn't a TTY (no point repainting, and CI captures choke
+# on the \r overwrites). NB: `status is-interactive` returns false inside a
+# script even when invoked from an interactive shell — use `test -t 2` to
+# detect a writable terminal directly. The original `is-interactive` check
+# made every spinner since v1.5.0 silently no-op.
 function _spinner_start --argument-names label
-    status is-interactive; or return
+    test -t 2; or return
     set -gx _SPINNER_LABEL $label
     fish -c '
         set chars ⣾ ⣽ ⣻ ⢿ ⡿ ⣟ ⣯ ⣷
@@ -1505,62 +1509,68 @@ function _univ_regenerate --inherit-variable univ_export_file --inherit-variable
     mv $tmp $univ_output_file
 end
 
-if test "$_dry_run" = no
-    # Load allowlist / blocklist patterns (skip comments + blanks).
-    set -l allowed_patterns
-    set -l ignored_patterns
-    if test -f $univ_export_file
-        set allowed_patterns (grep -vE '^\s*(#|$)' $univ_export_file)
+# Detection runs unconditionally; mutating actions (prompts + writes +
+# regenerate) are gated by `$_dry_run` below so `wrangle sync --dry-run`
+# still surfaces the auto-skipped count + drift summary.
+
+# Load allowlist / blocklist patterns (skip comments + blanks).
+set -l allowed_patterns
+set -l ignored_patterns
+if test -f $univ_export_file
+    set allowed_patterns (grep -vE '^\s*(#|$)' $univ_export_file)
+end
+if test -f $univ_ignore_file
+    set ignored_patterns (grep -vE '^\s*(#|$)' $univ_ignore_file)
+end
+
+# Get all current universals, partition into groups by prefix.
+# We need: list of (prefix → [var names]) for untracked + un-ignored vars.
+set -l drift_prefixes
+set -l drift_standalone
+set -l auto_skipped_private 0
+
+for name in (set -U -L | awk '{print $1}')
+    # Skip if matches any allowlist pattern (already tracked)
+    set -l skip no
+    for p in $allowed_patterns
+        string match -q $p $name; and set skip yes; and break
     end
-    if test -f $univ_ignore_file
-        set ignored_patterns (grep -vE '^\s*(#|$)' $univ_ignore_file)
+    test "$skip" = yes; and continue
+    # Skip if matches any ignore pattern (already ignored)
+    for p in $ignored_patterns
+        string match -q $p $name; and set skip yes; and break
     end
-
-    # Get all current universals, partition into groups by prefix.
-    # We need: list of (prefix → [var names]) for untracked + un-ignored vars.
-    set -l drift_prefixes
-    set -l drift_standalone
-    set -l auto_skipped_private 0
-
-    for name in (set -U -L | awk '{print $1}')
-        # Skip if matches any allowlist pattern (already tracked)
-        set -l skip no
-        for p in $allowed_patterns
-            string match -q $p $name; and set skip yes; and break
-        end
-        test "$skip" = yes; and continue
-        # Skip if matches any ignore pattern (already ignored)
-        for p in $ignored_patterns
-            string match -q $p $name; and set skip yes; and break
-        end
-        test "$skip" = yes; and continue
-        # Auto-skip fish's private/internal convention: names starting with `_`
-        # (fish builtins use `__name`, plugins use `_pluginname_*` for caches).
-        # Explicit allowlist matches above still win, so you can opt in by
-        # adding an exact name (e.g. `_foo`) to .univexport manually.
-        if string match -q '_*' $name
-            set auto_skipped_private (math $auto_skipped_private + 1)
-            continue
-        end
-
-        set -l prefix (_univ_prefix $name)
-        if test -z "$prefix"
-            set -a drift_standalone $name
-        else
-            contains -- $prefix $drift_prefixes; or set -a drift_prefixes $prefix
-        end
+    test "$skip" = yes; and continue
+    # Auto-skip fish's private/internal convention: names starting with `_`
+    # (fish builtins use `__name`, plugins use `_pluginname_*` for caches).
+    # Explicit allowlist matches above still win, so you can opt in by
+    # adding an exact name (e.g. `_foo`) to .univexport manually.
+    if string match -q '_*' $name
+        set auto_skipped_private (math $auto_skipped_private + 1)
+        continue
     end
 
-    if test $auto_skipped_private -gt 0
-        echo "  $GLYPH_DIM auto-skipped "(_n $auto_skipped_private)" private var(s) (leading _ — fish/plugin internals; add exact name to .univexport to opt in)"
-    end
-
-    set -l univ_tracked 0
-    set -l univ_ignored 0
-    if test (count $drift_prefixes) -eq 0; and test (count $drift_standalone) -eq 0
-        echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)"
+    set -l prefix (_univ_prefix $name)
+    if test -z "$prefix"
+        set -a drift_standalone $name
     else
-        echo "  Found "(_n (math (count $drift_prefixes) + (count $drift_standalone)))" untracked group(s)/var(s)"
+        contains -- $prefix $drift_prefixes; or set -a drift_prefixes $prefix
+    end
+end
+
+if test $auto_skipped_private -gt 0
+    echo "  $GLYPH_DIM auto-skipped "(_n $auto_skipped_private)" private var(s) (leading _ — fish/plugin internals; add exact name to .univexport to opt in)"
+end
+
+set -l univ_tracked 0
+set -l univ_ignored 0
+set -l drift_total (math (count $drift_prefixes) + (count $drift_standalone))
+if test $drift_total -eq 0
+    echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)"
+else if test "$_dry_run" = yes
+    echo "  $GLYPH_DIM dry run — "(_n $drift_total)" untracked group(s)/var(s) detected, nothing changed"
+else
+    echo "  Found "(_n $drift_total)" untracked group(s)/var(s)"
 
 
         # Prompt per prefix-group
@@ -1638,8 +1648,11 @@ if test "$_dry_run" = no
                 end
             end
         end
-    end
+end   # closes the if/else if/else for drift status
 
+# Side-effects (file writes, regenerate, dirty-file report) only when NOT in
+# dry-run. Detection above already ran in both modes.
+if test "$_dry_run" = no
     # Regenerate exported file if anything was tracked OR if the file's current
     # contents are stale relative to the live var values.
     if test "$univ_changed" = yes; or test -f $univ_output_file
