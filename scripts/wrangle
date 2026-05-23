@@ -1,19 +1,27 @@
 #!/usr/bin/env fish
 # wrangle — the sync command for this dotfiles repo.
 #
+# Branch model: each machine has its own branch (the "machine-branch") that
+# declares a parent via git config (`branch.<name>.wrangle-parent`). The
+# parent chain has arbitrary depth — e.g. work → personal → main. At the
+# start of every run wrangle walks the chain root-toward-leaf, merging each
+# parent into its child (skipping edges that are already up-to-date). On
+# merge conflict the cascade stops; resume after manual resolution with
+# `wrangle --resume-pull`.
+#
 # Passes (in order):
-#   -2. Branch sync       — ensure we're on `personal`; merge main into personal
-#   -1. Yoink check       — broken symlinks in ~ → offer to remove from home/;
-#                           orphan-symlink check → dangling symlinks pointing into home/
-#    0. Re-stow           — link any new files in home/ to ~
-#    1. Dotfile drift     — untracked files in ~/.config + ~ → [t/i/s/q]
-#    2. Fisher drift      — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
-#    3. Univ-var drift    — installed fish universals (per-prefix) → [t/i/s/q]
-#    4. Brew drift        — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
-#    4. Changelog         — append summary of changes to .wrangle-changelog
-#    5. Commit            — secret-scan staged diff, commit with auto/llm message
-#    6. Doc sync (opt-in) — claude reviews + edits .md files; commits separately
-#    7. Push              — preview unpushed commits + stat; [y/N/d=diff] prompt
+#   1. Parent-chain pull    — fetch + cascade-merge along the chain to machine-branch
+#   2. Yoink check          — broken symlinks in ~ → offer to remove from home/
+#   3. Orphan-symlink check — dangling symlinks in ~ pointing into home/ → remove
+#   4. Re-stow              — link any new files in home/ to ~
+#   5. Dotfile drift        — untracked files in ~/.config + ~ → [t/i/s/q]
+#   6. Fisher drift         — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
+#   7. Univ-var drift       — installed fish universals (per-prefix) → [t/i/s/q]
+#   8. Brew drift           — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
+#   9. Changelog            — append summary of changes to .wrangle-changelog
+#  10. Commit               — secret-scan staged diff, commit with auto/llm message
+#  11. Doc sync (opt-in)    — claude reviews + edits .md files; commits separately
+#  12. Push                 — preview unpushed commits + stat; [y/N/d=diff] prompt
 #
 # The first-run "do you want claude doc-review?" opt-in question is asked
 # UP FRONT (after the welcome banner, before drift detection) so the answer
@@ -32,6 +40,9 @@
 #   --with-claude             force-on claude doc review this run (overrides opt-out file)
 #   --suppress-claude         force-off claude this run (overrides opt-in file)
 #   --reset-claude-session    nuke the cached claude session id; start fresh next run
+#   -p, --pull                walk parent chain (fetch + cascade-merge), then exit
+#   --resume-pull             continue a cascade interrupted by a merge conflict
+#   --set-parent <branch>     write branch.<current>.wrangle-parent in git config
 #   -h, --help
 #
 # Env vars:
@@ -39,20 +50,26 @@
 #     WRANGLE_NO_COMMIT=1          skip auto-commit
 #     WRANGLE_NO_PUSH=1            skip push prompt
 #     WRANGLE_NO_PUSH_NAG=1        silence the unpushed-commits nag in new shells
+#     WRANGLE_NO_PULL_NAG=1        silence the upstream-changes-pending nag in new shells
 #     WRANGLE_NO_STALENESS_NAG=1   silence the "wrangle hasn't run in N days" nag
-#     WRANGLE_NO_BRANCH_SWITCH=1   skip the auto-switch to personal branch
+#     WRANGLE_NO_BRANCH_SWITCH=1   skip the auto-switch to machine-branch
 #     WRANGLE_ALLOW_SECRETS=1      bypass scan-secrets at commit time
 #   Claude tuning (defaults are fast/cheap; raise for heavier reasoning):
 #     WRANGLE_CLAUDE_MODEL=sonnet  override claude model (alias or full name)
 #     WRANGLE_CLAUDE_EFFORT=low    override effort: low|medium|high|xhigh|max
+# Git config (per-clone):
+#   wrangle.machine-branch <name>           which branch this machine owns (default: personal)
+#   branch.<name>.wrangle-parent <parent>   what to merge from at the start of each run
+#                                           (default: main; empty = root branch with no parent)
 
-argparse h/help d/dry-run f/force with-claude suppress-claude reset-claude-session review-docs no-branch-switch import-univ-vars -- $argv
+argparse h/help d/dry-run f/force with-claude suppress-claude reset-claude-session review-docs no-branch-switch import-univ-vars p/pull resume-pull set-parent= -- $argv
 or exit 1
 
 if set -q _flag_help
     echo "Usage: wrangle [--dry-run] [--force] [--with-claude|--suppress-claude]"
     echo "               [--reset-claude-session] [--review-docs] [--no-branch-switch]"
-    echo "               [--import-univ-vars]"
+    echo "               [--import-univ-vars] [--pull|--resume-pull]"
+    echo "               [--set-parent <branch>]"
     echo ""
     echo "Find dotfile + plugin + univ-var + brew drift and (by default) prompt what to do with each."
     echo ""
@@ -64,14 +81,21 @@ if set -q _flag_help
     echo "  --reset-claude-session    drop cached claude session id"
     echo "  --review-docs             skip drift entirely; invoke claude on current state"
     echo "                            (uses recent commit log as context; ignores opt-in setting)"
-    echo "  --no-branch-switch        skip auto-switch to personal (stay on current branch)"
+    echo "  --no-branch-switch        skip auto-switch to machine-branch (stay on current branch)"
     echo "  --import-univ-vars        source home/.config/fish/exported-univ-vars.fish to restore"
     echo "                            captured plugin universals on a new machine; then exit"
+    echo "  -p, --pull                walk the parent chain (fetch + cascade-merge), then exit"
+    echo "  --resume-pull             continue a cascade that was interrupted by a merge conflict"
+    echo "  --set-parent <branch>     declare <branch> as the current branch's wrangle-parent"
+    echo "                            (writes branch.<current>.wrangle-parent in git config)"
     echo "  -h, --help                show this help"
     echo ""
     echo "Opt-out env vars: WRANGLE_NO_COMMIT, WRANGLE_NO_PUSH, WRANGLE_NO_PUSH_NAG,"
-    echo "                  WRANGLE_NO_STALENESS_NAG, WRANGLE_NO_BRANCH_SWITCH, WRANGLE_ALLOW_SECRETS"
+    echo "                  WRANGLE_NO_PULL_NAG, WRANGLE_NO_STALENESS_NAG, WRANGLE_NO_BRANCH_SWITCH,"
+    echo "                  WRANGLE_ALLOW_SECRETS"
     echo "Claude tuning:    WRANGLE_CLAUDE_MODEL (default: sonnet), WRANGLE_CLAUDE_EFFORT (default: low)"
+    echo "Git config keys:  wrangle.machine-branch (default: personal)"
+    echo "                  branch.<X>.wrangle-parent (default: main)"
     exit 0
 end
 
@@ -99,6 +123,8 @@ set -l cache_dir ~/.cache/dotfiles
 set -l last_run_stamp $cache_dir/last-wrangle
 set -l config_file $cache_dir/wrangle-config
 set -l claude_session_file $cache_dir/claude-session-id
+set -l pull_cascade_state $cache_dir/pull-cascade-state
+set -l pull_nag_state $cache_dir/pull-nag-state
 
 mkdir -p $cache_dir
 
@@ -287,9 +313,226 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     return $rv
 end
 
+# ── Parent-chain helpers ──────────────────────────────────────────────────
+# Branch metadata lives in git config (per-clone, not pushed):
+#   branch.<name>.wrangle-parent <parent-branch-name>     # empty = root
+#   wrangle.machine-branch <branch-name>                   # this machine's branch
+
+function _wrangle_machine_branch --inherit-variable repo
+    set -l mb (git -C $repo config wrangle.machine-branch 2>/dev/null)
+    test -z "$mb"; and set mb personal
+    echo $mb
+end
+
+function _wrangle_parent_of --inherit-variable repo --argument-names branch
+    test -z "$branch"; and return 1
+    # `main` is hardcoded as root: it never has a parent, regardless of config.
+    test "$branch" = main; and return 1
+    set -l p (git -C $repo config "branch.$branch.wrangle-parent" 2>/dev/null)
+    if test -z "$p"
+        # Default unset → assume `main` is the parent of everything that
+        # isn't main itself. Backward-compat for setups that pre-date the
+        # parent-chain feature (just `main` + `personal`).
+        echo main
+    else
+        echo $p
+    end
+end
+
+# Walk the parent chain root-toward-leaf. Returns the chain as a list:
+# e.g. for `work` → [main, personal, work].
+function _wrangle_chain_for --inherit-variable repo --argument-names branch
+    set -l chain
+    set -l cur $branch
+    while test -n "$cur"
+        set chain $cur $chain
+        set cur (_wrangle_parent_of $cur)
+    end
+    for b in $chain
+        echo $b
+    end
+end
+
+# Cache-file helpers for the pull-cascade resume state.
+# Format: one line per remaining edge as "parent:child", e.g.
+#   main:personal
+#   personal:work
+# Plus a first line "ORIGINAL_BRANCH:<name>" so we know where to land back.
+function _wrangle_save_cascade_state --inherit-variable pull_cascade_state
+    set -l original $argv[1]
+    set -l remaining_edges $argv[2..-1]
+    echo "ORIGINAL_BRANCH:$original" > $pull_cascade_state
+    for edge in $remaining_edges
+        echo $edge >> $pull_cascade_state
+    end
+end
+
+function _wrangle_clear_cascade_state --inherit-variable pull_cascade_state
+    rm -f $pull_cascade_state
+end
+
+# Update the pull-nag cache so a successful merge stops re-nagging until new
+# upstream activity. Records the SHA of origin/<parent> we just merged from.
+function _wrangle_record_pull_nag --inherit-variable pull_nag_state --inherit-variable repo
+    set -l parent $argv[1]
+    set -l sha (git -C $repo rev-parse origin/$parent 2>/dev/null)
+    test -z "$sha"; and return
+    set -l tmp (mktemp)
+    if test -f $pull_nag_state
+        grep -v "^$parent:" $pull_nag_state > $tmp 2>/dev/null
+    end
+    echo "$parent:$sha" >> $tmp
+    mv $tmp $pull_nag_state
+end
+
+# Run the cascade. Walks (parent, child) edges root-toward-leaf, skipping
+# edges where the child already has the parent's commits. On a merge conflict
+# saves resume state and exits non-zero. Returns the original branch (where
+# we landed back on success).
+#
+# Usage: _wrangle_pull_chain  → walks from machine-branch's chain
+#        _wrangle_pull_chain --resume → continues from saved state
+function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cascade_state
+    set -l resume no
+    if test "$argv[1]" = --resume
+        set resume yes
+    end
+
+    pushd $repo >/dev/null
+
+    set -l original
+    set -l edges
+
+    if test $resume = yes
+        if not test -f $pull_cascade_state
+            echo "  $GLYPH_DIM no cascade in progress, nothing to resume"
+            popd >/dev/null
+            return 0
+        end
+        # Verify no merge is mid-flight (user has committed the resolution).
+        if test -f $repo/.git/MERGE_HEAD
+            echo "  $GLYPH_ERR merge still in progress — resolve and `git commit` first, then re-run --resume-pull"
+            popd >/dev/null
+            return 1
+        end
+        set -l first_line (head -1 $pull_cascade_state)
+        set original (string replace 'ORIGINAL_BRANCH:' '' -- $first_line)
+        set edges (tail -n +2 $pull_cascade_state)
+    else
+        set original (git rev-parse --abbrev-ref HEAD)
+        set -l machine_branch (_wrangle_machine_branch)
+        set -l chain (_wrangle_chain_for $machine_branch)
+        # Build (parent, child) edges from the chain. For chain [main, personal, work]:
+        # edges = [main:personal, personal:work]
+        if test (count $chain) -lt 2
+            # Only one branch in the chain (e.g. machine-branch is `main` itself).
+            popd >/dev/null
+            return 0
+        end
+        for i in (seq 1 (math (count $chain) - 1))
+            set edges $edges (printf '%s:%s' $chain[$i] $chain[(math $i + 1)])
+        end
+
+        _with_spinner "Fetching origin…" git fetch origin --prune 2>/dev/null
+    end
+
+    set -l merged_any no
+    for edge in $edges
+        set -l parts (string split ':' -- $edge)
+        set -l parent $parts[1]
+        set -l child $parts[2]
+
+        # Skip-if-no-work check. Use origin/$parent so we count what's
+        # fetched, not what's in the local parent branch (which might be
+        # stale if we haven't checked it out in a while).
+        set -l parent_ref origin/$parent
+        # If origin/$parent doesn't exist (e.g. the parent is local-only),
+        # fall back to the local branch.
+        if not git rev-parse --verify --quiet $parent_ref >/dev/null
+            set parent_ref $parent
+        end
+
+        set -l ahead (git rev-list --count "$child..$parent_ref" 2>/dev/null)
+        test -z "$ahead"; and set ahead 0
+
+        if test "$ahead" -eq 0
+            echo "  $GLYPH_DIM $child already has "(_name $parent)"'s changes (skip)"
+            continue
+        end
+
+        # Checkout the child branch (creating from parent if it doesn't exist).
+        if not git show-ref --verify --quiet refs/heads/$child
+            _with_spinner "Creating $child from $parent_ref…" git checkout -b $child $parent_ref 2>&1
+        else
+            _with_spinner "Switching to $child…" git checkout $child 2>&1
+        end
+
+        # Real merge (--no-ff to preserve the merge boundary in git log).
+        _spinner_start "Merging "(_name $parent_ref)" into "(_name $child)" ($ahead commit(s))…"
+        set -l merge_out (git merge --no-ff $parent_ref -m "merge $parent_ref into $child (wrangle --pull)" 2>&1)
+        set -l merge_rv $status
+        _spinner_stop
+
+        if test $merge_rv -ne 0
+            # Probably a conflict. Save resume state with remaining edges
+            # (starting from this one, since it's now mid-merge).
+            set -l remaining_idx (contains -i -- $edge $edges)
+            set -l remaining $edges[$remaining_idx..-1]
+            _wrangle_save_cascade_state $original $remaining
+            echo ""
+            echo "  $GLYPH_WARN merge conflict during cascade: "(_name $parent_ref)" → "(_name $child)
+            echo "    Files needing resolution:"
+            git diff --name-only --diff-filter=U | sed 's|^|      |'
+            echo ""
+            echo "  Resolve, then:"
+            echo "    git add <files> && git commit"
+            echo "    wrangle --resume-pull"
+            popd >/dev/null
+            return 1
+        end
+
+        echo "  $GLYPH_OK merged "(_n $ahead)" commit(s) from "(_name $parent_ref)" into "(_name $child)
+        _wrangle_record_pull_nag $parent
+        set merged_any yes
+    end
+
+    # Back to where we started.
+    if test (git rev-parse --abbrev-ref HEAD) != $original
+        _with_spinner "Switching back to $original…" git checkout $original 2>&1
+    end
+
+    _wrangle_clear_cascade_state
+    popd >/dev/null
+    return 0
+end
+
+# ── --set-parent: write branch.<current>.wrangle-parent + exit ──
+if set -q _flag_set_parent
+    set -l target $_flag_set_parent
+    set -l current (git -C $repo rev-parse --abbrev-ref HEAD)
+    if test "$current" = main
+        echo "$GLYPH_ERR refusing to set a wrangle-parent on main (main is the root)" >&2
+        exit 1
+    end
+    git -C $repo config "branch.$current.wrangle-parent" "$target"
+    echo "  $GLYPH_OK branch.$current.wrangle-parent = "(_name $target)
+    exit 0
+end
+
+# ── --pull / --resume-pull: cascade, then exit ──
+if set -q _flag_pull; or set -q _flag_resume_pull
+    _header "Parent-chain pull"
+    if set -q _flag_resume_pull
+        _wrangle_pull_chain --resume
+    else
+        _wrangle_pull_chain
+    end
+    exit $status
+end
+
 # `$_claude_opt` (on/off) is computed later — right after the first-run
-# opt-in question runs (so the just-saved answer is honored this run). Pass 5
-# (commit message) and Pass 6 (doc-sync) both read it.
+# opt-in question runs (so the just-saved answer is honored this run). Pass 10
+# (commit message) and Pass 11 (doc-sync) both read it.
 
 # Build a commit message. Three paths:
 #   1. Single structural change → use it directly. claude can't improve much.
@@ -369,44 +612,40 @@ Rules:
     echo $msg
 end
 
-# ─── Pass -2: branch sync (ensure we're on personal, merge main → personal) ─
-# Framework lives on main; wrangle's job is personal. Auto-switch with a
-# notice, then bring main's framework updates down via fast-forward merge.
+# ─── Pass 1: parent-chain pull ───────────────────────────────────────────
+# Auto-switch to the machine-branch (default: personal), then cascade-merge
+# along the parent chain. See _wrangle_pull_chain for the full semantics.
 # Skip with --no-branch-switch / WRANGLE_NO_BRANCH_SWITCH=1.
 if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
     pushd $repo >/dev/null
 
+    set -l machine_branch (_wrangle_machine_branch)
     set -l current_branch (git rev-parse --abbrev-ref HEAD)
-    if test "$current_branch" != personal
-        if git show-ref --verify --quiet refs/heads/personal
-            git checkout personal 2>&1 | tail -1 >/dev/null
-            echo "  $GLYPH_ARROW switched to personal (was on $current_branch)"
+    if test "$current_branch" != "$machine_branch"
+        if git show-ref --verify --quiet refs/heads/$machine_branch
+            _with_spinner "Switching to $machine_branch…" git checkout $machine_branch 2>&1
+            echo "  $GLYPH_ARROW switched to "(_name $machine_branch)" (was on "(_name $current_branch)")"
         else
-            git checkout -b personal 2>&1 | tail -1 >/dev/null
-            echo "  $GLYPH_ARROW created + switched to personal (was on $current_branch)"
-        end
-    end
-
-    # Merge framework updates from main (skip if dry-run, no remote, or no main).
-    if test "$_dry_run" = no; and git remote | grep -q .
-        _with_spinner "Fetching origin/main…" git fetch origin main 2>/dev/null
-        if git rev-parse --verify --quiet origin/main >/dev/null
-            _spinner_start "Merging origin/main into personal…"
-            set -l merge_out (git merge --ff-only origin/main 2>&1)
-            set -l merge_rv $status
-            _spinner_stop
-            if test $merge_rv -ne 0
-                # Non-fast-forward = personal has diverged from main.
-                echo "  $GLYPH_WARN personal has diverged from main; resolve manually with: git merge origin/main"
-            else if string match -q "*Already up to date*" -- "$merge_out"
-                : # silent — nothing to merge
-            else
-                echo "  $GLYPH_OK merged framework updates from main"
-            end
+            set -l parent (_wrangle_parent_of $machine_branch)
+            set -l from main
+            test -n "$parent"; and set from $parent
+            _with_spinner "Creating $machine_branch from $from…" git checkout -b $machine_branch $from 2>&1
+            echo "  $GLYPH_ARROW created + switched to "(_name $machine_branch)" from "(_name $from)" (was on "(_name $current_branch)")"
         end
     end
 
     popd >/dev/null
+
+    if test "$_dry_run" = no
+        if git -C $repo remote | grep -q .
+            _wrangle_pull_chain
+            set -l cascade_rv $status
+            if test $cascade_rv -ne 0
+                # Cascade failed (conflict). Exit so user can resolve.
+                exit $cascade_rv
+            end
+        end
+    end
 end
 
 # ─── --import-univ-vars: short-circuit, source the exported file, exit ──
@@ -526,7 +765,7 @@ end
 set -q _flag_with_claude; and set _claude_opt on
 set -q _flag_suppress_claude; and set _claude_opt off
 
-# ─── Pass -1: yoink check ─────────────────────────────────────────────────
+# ─── Pass 2: yoink check ─────────────────────────────────────────────────
 set -l yoink_candidates
 if test "$_dry_run" = no; and test "$_first_run" = no
     set -l has_stow_links no
@@ -581,11 +820,11 @@ if test (count $yoink_candidates) -gt 0
     end
 end
 
-# ─── Pass -1b: orphan-symlink check ───────────────────────────────────────
+# ─── Pass 3: orphan-symlink check ────────────────────────────────────────
 # Inverse of the yoink check above: ~ has a symlink pointing into the repo,
 # but the source file in home/ no longer exists (e.g., you deleted it from
 # home/ directly without unstowing first). `stow -R` leaves these behind.
-# Find and clean them up before Pass 0 (re-stow) so subsequent installs
+# Find and clean them up before Pass 4 (re-stow) so subsequent installs
 # don't trip over "conflicting file" errors.
 set -l orphan_symlinks
 if test "$_dry_run" = no
@@ -629,7 +868,7 @@ if test (count $orphan_symlinks) -gt 0
     end
 end
 
-# ─── Pass 0: re-stow ──────────────────────────────────────────────────────
+# ─── Pass 4: re-stow ─────────────────────────────────────────────────────
 if command -q stow
     if test "$_dry_run" = no
         pushd $repo >/dev/null
@@ -733,7 +972,7 @@ function _add_ignore --inherit-variable ignore_file
     echo "  $GLYPH_OK added to .dotignore"
 end
 
-# ─── Pass 1: dotfile drift ────────────────────────────────────────────────
+# ─── Pass 5: dotfile drift ───────────────────────────────────────────────
 echo ""
 _header "Dotfile drift"
 set -l candidates
@@ -817,7 +1056,7 @@ if test (count $home_dirty) -gt 0
     _log_change (count $home_dirty)" tracked dotfile(s) hand-edited under home/"
 end
 
-# ─── Pass 2: fisher drift ─────────────────────────────────────────────────
+# ─── Pass 6: fisher drift ────────────────────────────────────────────────
 echo ""
 _header "Fisher drift"
 set -l plugin_changed no
@@ -936,7 +1175,7 @@ else
     end
 end
 
-# ─── Pass 3: univ-var drift ──────────────────────────────────────────────
+# ─── Pass 7: univ-var drift ──────────────────────────────────────────────
 # Tracks plugin universal variables (tide config, sponge config, etc.) so
 # they survive `git clone` + bootstrap on a new machine. Necessary evil:
 # fish universals are controversial upstream (#7379) but plugins like tide
@@ -1158,7 +1397,7 @@ if test "$_dry_run" = no
     end
 end
 
-# ─── Pass 4: brew drift ───────────────────────────────────────────────────
+# ─── Pass 8: brew drift ──────────────────────────────────────────────────
 # Brewfile mutations here are INCREMENTAL: each [t]rack appends one entry,
 # each [r]emove deletes one entry. No end-of-pass re-dump, so [s]kip truly
 # means "defer; ask me again next run." dump-brewfile is still used to
@@ -1357,14 +1596,14 @@ if test "$_dry_run" = no
     touch $last_run_stamp
 end
 
-# ─── Pass 4: changelog ────────────────────────────────────────────────────
+# ─── Pass 9: changelog ───────────────────────────────────────────────────
 if test "$_dry_run" = no; and test (count $_changes) -gt 0
     for c in $_changes
         echo (date -Iseconds)" $c" >> $changelog_file
     end
 end
 
-# ─── Pass 5: commit (push happens later, after optional doc-sync) ────────
+# ─── Pass 10: commit (push happens later, after optional doc-sync) ───────
 set -g _committed no
 if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
     pushd $repo >/dev/null
@@ -1399,7 +1638,7 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
     popd >/dev/null
 end
 
-# ─── Pass 6: claude-code doc review (opt-in) ──────────────────────────────
+# ─── Pass 11: claude-code doc review (opt-in) ────────────────────────────
 # Runs AFTER the main commit but BEFORE the push, so any doc edits claude
 # makes get committed (as a separate "docs:" commit so provenance is clear)
 # and pushed in the same batch instead of leaving a dangling doc commit for
@@ -1474,7 +1713,7 @@ Recent commit history (for context — last 10 commits):
     end
 end
 
-# ─── Pass 7: push (with preview) ─────────────────────────────────────────
+# ─── Pass 12: push (with preview) ────────────────────────────────────────
 # Shows the unpushed-commit log + file stat before prompting, with [d]iff to
 # expand into the full git diff via less. Split out from the commit pass so
 # doc-sync can interject its own commit between the two.

@@ -64,31 +64,65 @@ else
     chsh -s "$FISH_PATH"
 fi
 
-# ── 5. Set up the `personal` branch ─────────────────────────────────────
-# Framework changes live on `main` (shared, public-shippable). All of YOUR
-# machine-specific changes (dotfiles, Brewfile, plugin config) live on a
-# `personal` branch. wrangle commits exclusively to `personal`.
+# ── 5. Pick this machine's branch + its parent ──────────────────────────
+# Framework lives on `main` (shared, public-shippable). All your machine-
+# specific changes live on a per-machine branch (default name: `personal`)
+# that declares a parent. Wrangle auto-merges parent → this branch at the
+# start of every run, so framework updates flow downstream automatically.
 #
-# Three cases:
-#   - Already on a `personal` branch locally → no-op.
-#   - `personal` exists on the remote (re-imaging the same machine, your
-#     own previously-pushed personal) → check it out tracking origin.
-#   - No `personal` anywhere → create a fresh one from main.
+# Common layouts:
+#   - Single machine:        personal → main
+#   - Multiple machines:     home → personal → main, work → personal → main
+#   - Or:                    work → main (independent of personal)
 echo
 cd "$REPO_DIR"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$CURRENT_BRANCH" = "personal" ]; then
-    echo "✓ Already on personal branch"
-elif git show-ref --verify --quiet refs/heads/personal; then
-    echo "→ Switching to existing local personal branch..."
-    git checkout personal
-elif git ls-remote --exit-code --heads origin personal >/dev/null 2>&1; then
-    echo "→ Checking out personal from origin..."
-    git checkout -b personal origin/personal
+
+# If we already have a configured machine-branch (re-running bootstrap), reuse it.
+EXISTING_MB="$(git config wrangle.machine-branch 2>/dev/null || true)"
+
+if [ -n "$EXISTING_MB" ] && git show-ref --verify --quiet "refs/heads/$EXISTING_MB"; then
+    echo "✓ Machine-branch already configured: $EXISTING_MB"
+    MB="$EXISTING_MB"
+    if [ "$CURRENT_BRANCH" != "$MB" ]; then
+        echo "→ Switching to $MB..."
+        git checkout "$MB"
+    fi
 else
-    echo "→ Creating fresh personal branch from main..."
-    echo "  (all your machine-specific changes will live here; main stays framework-only)"
-    git checkout -b personal main
+    DEFAULT_MB=personal
+    printf "→ Branch name for this machine? [%s] " "$DEFAULT_MB"
+    read -r MB
+    [ -z "$MB" ] && MB="$DEFAULT_MB"
+
+    if git show-ref --verify --quiet "refs/heads/$MB"; then
+        echo "→ Switching to existing local branch $MB..."
+        git checkout "$MB"
+    elif git ls-remote --exit-code --heads origin "$MB" >/dev/null 2>&1; then
+        echo "→ Checking out $MB from origin..."
+        git checkout -b "$MB" "origin/$MB"
+    else
+        DEFAULT_PARENT=main
+        printf "→ Parent branch for %s? [%s] " "$MB" "$DEFAULT_PARENT"
+        read -r PARENT
+        [ -z "$PARENT" ] && PARENT="$DEFAULT_PARENT"
+        echo "→ Creating $MB from $PARENT..."
+        git checkout -b "$MB" "$PARENT"
+        git config "branch.$MB.wrangle-parent" "$PARENT"
+        echo "  (declared $PARENT as $MB's wrangle-parent)"
+    fi
+
+    git config wrangle.machine-branch "$MB"
+    echo "✓ Machine-branch set to: $MB"
+
+    # If no parent is set yet (e.g., branch was pre-existing), prompt now.
+    if ! git config "branch.$MB.wrangle-parent" >/dev/null 2>&1 && [ "$MB" != "main" ]; then
+        DEFAULT_PARENT=main
+        printf "→ Parent branch for %s (for wrangle's chain-pull)? [%s] " "$MB" "$DEFAULT_PARENT"
+        read -r PARENT
+        [ -z "$PARENT" ] && PARENT="$DEFAULT_PARENT"
+        git config "branch.$MB.wrangle-parent" "$PARENT"
+        echo "  (declared $PARENT as $MB's wrangle-parent)"
+    fi
 fi
 
 # ── 6. Stow the framework into ~ ────────────────────────────────────────
@@ -122,17 +156,17 @@ cat <<EOF
 ────────────────────────────────────────────────────────────
 Bootstrap complete.
 
-You're now on the \`personal\` branch. wrangle will commit your changes
-here. Framework updates from upstream live on \`main\` — wrangle auto-
-merges main into personal at the start of each run.
+You're now on the \`$MB\` branch. wrangle will commit your changes here.
+Framework updates from upstream flow down the parent chain — wrangle
+walks (and merges) the chain at the start of every run.
 
 Anything else you want this machine to have (tools, dotfiles, GUI apps)
 should be installed/configured normally — \`wrangle\` will detect it and
 walk you through tracking it on the next run.
 
-If you'll be pushing personal to a remote, set up auth in whatever way
+If you'll be pushing \`$MB\` to a remote, set up auth in whatever way
 you prefer (osxkeychain helper, ssh, gh CLI, etc.). On first push,
-git will prompt with: \`git push --set-upstream origin personal\`.${UNIV_LINE}
+git will prompt with: \`git push --set-upstream origin $MB\`.${UNIV_LINE}
 
 Now launching the first \`wrangle\` run...
 ────────────────────────────────────────────────────────────
