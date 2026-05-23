@@ -5,13 +5,18 @@
 
 set -l bump (dirname (realpath (status -f)))/../scripts/bump-version
 
-# Helper: spin up a temp main-branch repo with one tag.
+# Helper: spin up a temp main-branch repo with one tag. Uses a lightweight
+# tag (not -a) so we don't need user.email/user.name configured globally —
+# `git tag -a` errors on missing identity in clean CI envs, and the prior
+# version of this helper hid that with `2>/dev/null`, silently dropping
+# every fixture tag and making the tests look like they passed locally
+# (where global git config exists) but fail in CI.
 function _make_versioned_repo --argument-names tag
     set -l tmp (mktemp -d)
     cd $tmp
     git init -q -b main
     git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "init"
-    git tag -a "$tag" -m "$tag" 2>/dev/null
+    git tag "$tag"
     mkdir -p scripts
     echo $tmp
 end
