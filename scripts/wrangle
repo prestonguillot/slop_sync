@@ -859,6 +859,7 @@ if test "$_dry_run" = no
     # We need: list of (prefix → [var names]) for untracked + un-ignored vars.
     set -l drift_prefixes
     set -l drift_standalone
+    set -l auto_skipped_private 0
 
     for name in (set -U -L | awk '{print $1}')
         # Skip if matches any allowlist pattern (already tracked)
@@ -872,6 +873,14 @@ if test "$_dry_run" = no
             string match -q $p $name; and set skip yes; and break
         end
         test "$skip" = yes; and continue
+        # Auto-skip fish's private/internal convention: names starting with `_`
+        # (fish builtins use `__name`, plugins use `_pluginname_*` for caches).
+        # Explicit allowlist matches above still win, so you can opt in by
+        # adding an exact name (e.g. `_foo`) to .univexport manually.
+        if string match -q '_*' $name
+            set auto_skipped_private (math $auto_skipped_private + 1)
+            continue
+        end
 
         set -l prefix (_univ_prefix $name)
         if test -z "$prefix"
@@ -879,6 +888,10 @@ if test "$_dry_run" = no
         else
             contains -- $prefix $drift_prefixes; or set -a drift_prefixes $prefix
         end
+    end
+
+    if test $auto_skipped_private -gt 0
+        echo "  $GLYPH_DIM auto-skipped $auto_skipped_private private var(s) (leading _ — fish/plugin internals; add exact name to .univexport to opt in)"
     end
 
     if test (count $drift_prefixes) -eq 0; and test (count $drift_standalone) -eq 0

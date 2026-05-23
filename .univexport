@@ -12,5 +12,7 @@
 #   * Don't add patterns for fish native settings (theme colors, key
 #     bindings) — those should be persisted via config.fish or function
 #     files in home/.
-#   * Don't add patterns for plugin INTERNAL state (typically `_<plugin>_*`
-#     prefixed) — those are per-process caches, useless cross-machine.
+#   * Vars whose names start with `_` (fish + plugin internal convention) are
+#     auto-skipped by wrangle's drift pass — you won't be asked about them.
+#     If you ever need to capture one anyway, add its exact name on its own
+#     line here; an explicit allowlist match wins over the auto-skip.
