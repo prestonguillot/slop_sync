@@ -364,7 +364,10 @@ end
 function _spinner_start --argument-names label
     test -t 2; or return
     set -gx _SPINNER_LABEL $label
-    fish -c '
+    # --no-config: this subshell only needs printf + sleep. Sourcing config.fish
+    # would re-run fnm/plugin init in a backgrounded subprocess where fnm's
+    # shell-detection fails ("Can't infer shell!") and leaks to stderr.
+    fish --no-config -c '
         set chars ⣾ ⣽ ⣻ ⢿ ⡿ ⣟ ⣯ ⣷
         set i 1
         while true
@@ -481,11 +484,14 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     # unambiguous ("something is happening"). Stopping the spinner on first-
     # byte requires piping through fish in a way that loses exit status.
     # --permission-mode acceptEdits: auto-approve Edit/Write on the .md files
-    # claude is asked to maintain. Bash + WebFetch etc. still require interactive
-    # approval, but in -p mode there's no TTY for that prompt, so those fail
-    # closed (claude can't shell-out or fetch from this context — intended).
+    # claude is asked to maintain.
+    # --allowedTools: explicit whitelist so claude doesn't waste a turn (and
+    # noisy output) trying Bash/WebFetch/etc. only to hit the no-TTY wall.
+    # Doc review needs to read files, grep for references, and edit/create
+    # markdown — nothing else.
     _spinner_start "claude thinking… (model=$model effort=$effort)"
     claude -p --output-format text --permission-mode acceptEdits \
+        --allowedTools "Read,Edit,Write,Grep,Glob" \
         --model $model --effort $effort --session-id $session_id "$argv[1]"
     set -l rv $status
     _spinner_stop
@@ -849,7 +855,9 @@ The repo has two doc tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free.
   - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live on the machine-branch (default: `personal`). A common convention is a top-level PERSONAL.md.
 
-You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/.
+You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/).
+
+Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail.
 
 Be conservative — only act on user-facing consequences.
 
@@ -1931,7 +1939,9 @@ The repo has two documentation tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
   - PERSONAL docs describe the user's specific layer on top: post-bootstrap manual steps, tool-specific auth flows, machine-specific setup notes. These live on the machine-branch (default: `personal`). Create or update them when the machine-branch (Brewfile, tracked dotfiles, fish_plugins) adds something with known post-install or first-time-setup needs that aren't documented elsewhere. A common convention is a top-level PERSONAL.md, but you can split into multiple docs if it makes sense.
 
-You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/. Those are managed by other parts of the system.
+You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/). Those are managed by other parts of the system.
+
+Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail. Don't waste turns on tools that aren't whitelisted.
 
 Be conservative: only act on changes that have real user-facing setup or behavior consequences. Skip cosmetic or trivial diffs.
 
