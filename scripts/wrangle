@@ -753,7 +753,7 @@ end
 set -l home_dirty (git -C $repo diff --name-only -- home/ 2>/dev/null | string match -v 'home/.config/fish/fish_plugins')
 if test (count $home_dirty) -gt 0
     echo ""
-    echo "  $GLYPH_DIM tracked file(s) under home/ modified outside wrangle:"
+    echo "  $GLYPH_DIM tracked file(s) under home/ with uncommitted changes:"
     for f in $home_dirty
         echo "    $f"
     end
@@ -857,10 +857,11 @@ else
         end
     end
 
-    # Catch fish_plugins modifications that happened outside this pass —
-    # e.g. `fisher install foo` updates the file directly, so installed-vs-file
-    # matches even though the file is dirty in git.
-    _report_external_changes "fish_plugins changed externally (likely a fisher install outside wrangle)" home/.config/fish/fish_plugins
+    # Catch fish_plugins modifications that didn't surface through the drift
+    # check above — e.g. a `fisher install foo` (in or out of wrangle) added
+    # `foo` to the file before this pass ran, so installed-vs-file matches
+    # but the file is still dirty relative to its last commit.
+    _report_external_changes "fish_plugins has uncommitted changes" home/.config/fish/fish_plugins
 end
 
 # ─── Pass 3: univ-var drift ──────────────────────────────────────────────
@@ -1070,7 +1071,7 @@ if test "$_dry_run" = no
 
     # Catch hand-edits to .univexport / .univignore (e.g. user manually added
     # an exact name to opt-in a normally-auto-skipped private var).
-    _report_external_changes ".univexport / .univignore changed externally" .univexport .univignore
+    _report_external_changes ".univexport / .univignore has uncommitted changes" .univexport .univignore
 end
 
 # ─── Pass 4: brew drift ───────────────────────────────────────────────────
@@ -1244,10 +1245,10 @@ else
 
     rm -f $tmp_dump
 
-    # Catch Brewfile/.brewignore modifications outside this pass — e.g. user
-    # ran `dump-brewfile` manually, hand-edited Brewfile to add a brew line,
-    # or hand-edited .brewignore.
-    _report_external_changes "Brewfile / .brewignore changed externally" Brewfile .brewignore
+    # Catch Brewfile/.brewignore modifications that didn't surface through
+    # drift — file was edited (hand or by dump-brewfile) but is now in sync
+    # with the installed state.
+    _report_external_changes "Brewfile / .brewignore has uncommitted changes" Brewfile .brewignore
 
     echo ""
     if test "$_dry_run" = yes
