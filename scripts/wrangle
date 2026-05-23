@@ -271,9 +271,9 @@ function _build_commit_msg_via_claude --inherit-variable _changes --inherit-vari
 Wrangle's own log of decisions this run (may be empty if these are hand-edits):
 $changes_str
 Staged diff (first 300 lines):
-\`\`\`
+```
 $diff
-\`\`\`
+```
 
 Rules:
 - One-line subject, lowercase, no trailing period, prefer < 70 chars
@@ -366,7 +366,7 @@ if set -q _flag_review_docs
     echo "$HEAD_OPEN─── Doc review (--review-docs) ───$HEAD_CLOSE"
     echo "  Asking claude to review docs against recent repo state..."
 
-    set -l prompt_text "You are claude-code invoked by \`wrangle --review-docs\` at $repo. The user has explicitly asked you to review the repo's documentation against the current state of the repo and recent activity. There are no specific changes from a wrangle run this time — your job is to look at the recent commits and current docs and propose updates if anything is factually wrong, out of date, or incomplete.
+    set -l prompt_text "You are claude-code invoked by `wrangle --review-docs` at $repo. The user has explicitly asked you to review the repo's documentation against the current state of the repo and recent activity. There are no specific changes from a wrangle run this time — your job is to look at the recent commits and current docs and propose updates if anything is factually wrong, out of date, or incomplete.
 
 The repo has two doc tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live in the genesys commit and should stay opinion-free.
@@ -387,7 +387,7 @@ Recent commit history (last 15 commits):
     set -l rv $status
     echo ""
     if test $rv -eq 0
-        echo "  $GLYPH_OK claude finished. \`git status\` in the repo to see any doc changes."
+        echo "  $GLYPH_OK claude finished. `git status` in the repo to see any doc changes."
     else
         echo "  $GLYPH_WARN claude exited non-zero ($rv)."
     end
@@ -898,7 +898,7 @@ if test "$_dry_run" = no
             end
             set -l count (count $members)
             echo ""
-            echo "    prefix \`$prefix*\` — $count var(s):"
+            echo "    prefix `$prefix*` — $count var(s):"
             for m in $members
                 echo "      $m"
             end
@@ -907,13 +907,13 @@ if test "$_dry_run" = no
                 switch $choice
                     case t T track
                         echo "$prefix*" >> $univ_export_file
-                        echo "      $GLYPH_OK added \`$prefix*\` to .univexport"
+                        echo "      $GLYPH_OK added `$prefix*` to .univexport"
                         _log_change "tracked univ-var pattern: $prefix*"
                         set univ_changed yes
                         break
                     case i I ignore
                         echo "$prefix*" >> $univ_ignore_file
-                        echo "      $GLYPH_OK added \`$prefix*\` to .univignore"
+                        echo "      $GLYPH_OK added `$prefix*` to .univignore"
                         echo "      $GLYPH_DIM tip: to capture an individual var from this prefix later,"
                         echo "      $GLYPH_DIM      add its exact name on its own line in .univexport"
                         echo "      $GLYPH_DIM      ($repo/.univexport — exact names match like patterns)"
@@ -939,13 +939,13 @@ if test "$_dry_run" = no
                 switch $choice
                     case t T track
                         echo $name >> $univ_export_file
-                        echo "      $GLYPH_OK added \`$name\` to .univexport"
+                        echo "      $GLYPH_OK added `$name` to .univexport"
                         _log_change "tracked univ-var: $name"
                         set univ_changed yes
                         break
                     case i I ignore
                         echo $name >> $univ_ignore_file
-                        echo "      $GLYPH_OK added \`$name\` to .univignore"
+                        echo "      $GLYPH_OK added `$name` to .univignore"
                         _log_change "ignored univ-var: $name"
                         break
                     case s S skip ''
@@ -1227,7 +1227,7 @@ if test "$_dry_run" = no; and test (count $_changes) -gt 0; and test "$_claude_o
         echo "$HEAD_OPEN─── Doc sync (claude) ───$HEAD_CLOSE"
 
         # Build context: changes from this run + any pending from prior runs.
-        set -l prompt_text "You are claude-code invoked by \`wrangle\` (the dotfiles repo's sync command) at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
+        set -l prompt_text "You are claude-code invoked by `wrangle` (the dotfiles repo's sync command) at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
 
 The repo has two documentation tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live in the genesys commit and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
@@ -1271,7 +1271,7 @@ end
 if test "$_dry_run" = no; and not test -f $config_file
     echo ""
     echo "$HEAD_OPEN─── One-time question ───$HEAD_CLOSE"
-    echo "  wrangle can optionally use claude-code (the \`claude\` CLI) after each run"
+    echo "  wrangle can optionally use claude-code (the `claude` CLI) after each run"
     echo "  to review the repo's docs (framework and personal-layer) for changes that"
     echo "  need reflecting. It runs only when wrangle has actual changes, uses a"
     echo "  persistent session to avoid re-reading the repo each time, and obeys"
