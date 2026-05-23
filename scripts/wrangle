@@ -130,6 +130,30 @@ set -g GLYPH_DIM  (_dim)"·"(_rs)
 set -g GLYPH_ARROW (_dim)"→"(_rs)
 set -g HEAD_OPEN  (_h)
 set -g HEAD_CLOSE (_rs)
+set -g HEAD_RULE  (_dim)"───"(_rs)
+
+# Print a section header: dim `───` rules flanking a bold title. Standardizes
+# every pass's header line so headers look identical across the script.
+function _header
+    echo "$HEAD_RULE $HEAD_OPEN$argv$HEAD_CLOSE $HEAD_RULE"
+end
+
+# Format a count for inline display: bold for non-zero (signal), dim for
+# zero (visual fade so the eye skips it). Used in summary lines and
+# "Found N untracked" callouts.
+function _n
+    if test "$argv[1]" = "0"
+        printf '%s0%s' (_dim) (_rs)
+    else
+        printf '%s%s%s' (_h) "$argv[1]" (_rs)
+    end
+end
+
+# Format an item name (file path, plugin name, var name) for emphasis in
+# drift listings — cyan to set it apart from surrounding prose.
+function _name
+    printf '%s%s%s' (_info) "$argv[1]" (_rs)
+end
 
 # Spinner: shows braille animation on a single line until _spinner_stop fires.
 # Skipped in non-interactive sessions (no TTY = nothing to repaint).
@@ -364,7 +388,7 @@ if set -q _flag_import_univ_vars
         echo "  Capture them first by running wrangle and answering [t]rack on a univ-var prefix." >&2
         exit 1
     end
-    echo "$HEAD_OPEN─── Importing universal variables ───$HEAD_CLOSE"
+    _header "Importing universal variables"
     set -l before_count (count (set -U -L))
     source $export_file
     set -l after_count (count (set -U -L))
@@ -383,7 +407,7 @@ if set -q _flag_review_docs
         echo "$GLYPH_ERR --review-docs requires the claude CLI." >&2
         exit 1
     end
-    echo "$HEAD_OPEN─── Doc review (--review-docs) ───$HEAD_CLOSE"
+    _header "Doc review (--review-docs)"
     echo "  Asking claude to review docs against recent repo state..."
 
     set -l prompt_text "You are claude-code invoked by `wrangle --review-docs` at $repo. The user has explicitly asked you to review the repo's documentation against the current state of the repo and recent activity. There are no specific changes from a wrangle run this time — your job is to look at the recent commits and current docs and propose updates if anything is factually wrong, out of date, or incomplete.
@@ -417,7 +441,7 @@ end
 # ── First-run welcome ─────────────────────────────────────────────────────
 if test "$_first_run" = yes; and test "$_dry_run" = no
     echo ""
-    echo "$HEAD_OPEN─── First wrangle on this machine ───$HEAD_CLOSE"
+    _header "First wrangle on this machine"
     echo "  I'll walk through what's already in ~ and ask what to track."
     echo "  Everything is non-destructive — nothing gets moved or modified"
     echo "  unless you say [t]rack."
@@ -433,7 +457,7 @@ end
 # doc-sync, not just future runs.
 if test "$_dry_run" = no; and not test -f $config_file
     echo ""
-    echo "$HEAD_OPEN─── One-time question ───$HEAD_CLOSE"
+    _header "One-time question"
     echo "  wrangle can optionally use claude-code (the `claude` CLI) after each run"
     echo "  to review the repo's docs (framework and personal-layer) for changes that"
     echo "  need reflecting. It runs only when wrangle has actual changes, uses a"
@@ -495,11 +519,11 @@ if test "$_dry_run" = no; and test "$_first_run" = no
 end
 
 if test (count $yoink_candidates) -gt 0
-    echo "$HEAD_OPEN─── Yoink check ───$HEAD_CLOSE"
-    echo "  Files in home/ but missing from ~ ("(count $yoink_candidates)") — looks like you removed them:"
+    _header "Yoink check"
+    echo "  Files in home/ but missing from ~ ("(_n (count $yoink_candidates))") — looks like you removed them:"
     for rel in $yoink_candidates
         echo ""
-        echo "    home/$rel"
+        echo "    "(_name "home/$rel")
         while true
             read -P (_prompt)"    [y]oink (remove from repo) / [r]estore (stow back) / [s]kip / [q]uit > "(_rs) choice
             switch $choice
@@ -551,11 +575,11 @@ end
 
 if test (count $orphan_symlinks) -gt 0
     echo ""
-    echo "$HEAD_OPEN─── Orphan symlinks ───$HEAD_CLOSE"
-    echo "  Symlinks in ~ pointing into home/ whose targets no longer exist ("(count $orphan_symlinks)"):"
+    _header "Orphan symlinks"
+    echo "  Symlinks in ~ pointing into home/ whose targets no longer exist ("(_n (count $orphan_symlinks))"):"
     for path in $orphan_symlinks
         echo ""
-        echo "    $path → "(readlink $path)
+        echo "    "(_name $path)" $GLYPH_ARROW "(_name (readlink $path))
         while true
             read -P (_prompt)"    [r]emove dangling symlink / [s]kip / [q]uit > "(_rs) choice
             switch $choice
@@ -635,7 +659,7 @@ function _show
     set -l rel $argv[1]
     set -l full $HOME/$rel
     echo ""
-    echo "$HEAD_OPEN─── ~/$rel ───$HEAD_CLOSE"
+    _header "~/$rel"
     if test -d $full
         set -l n (find $full -type f 2>/dev/null | count)
         set -l sz (du -sh $full 2>/dev/null | awk '{print $1}')
@@ -682,7 +706,7 @@ end
 
 # ─── Pass 1: dotfile drift ────────────────────────────────────────────────
 echo ""
-echo "$HEAD_OPEN─── Dotfile drift ───$HEAD_CLOSE"
+_header "Dotfile drift"
 set -l candidates
 for f in $HOME/.[A-Za-z0-9]*
     test -L $f; and continue
@@ -705,7 +729,7 @@ else
     set -l mode_hint
     test "$_dry_run" = yes; and set mode_hint " (dry run — no prompts)"
     test "$_force" = yes; and set mode_hint "$mode_hint (--force: ignore list bypassed)"
-    echo "  Found "(count $candidates)" untracked path(s)$mode_hint."
+    echo "  Found "(_n (count $candidates))" untracked path(s)$mode_hint."
 end
 
 set -l tracked_count 0
@@ -744,9 +768,9 @@ end
 # Summary: only print a counts line when work actually happened (or in dry-run);
 # otherwise the "no untracked dotfiles" ok-line above already conveys "all good".
 if test "$_dry_run" = yes; and test (count $candidates) -gt 0
-    echo "  $GLYPH_DIM dry run — "(count $candidates)" untracked path(s) listed, nothing changed"
+    echo "  $GLYPH_DIM dry run — "(_n (count $candidates))" untracked path(s) listed, nothing changed"
 else if test $tracked_count -gt 0; or test $ignored_count -gt 0
-    echo "  $GLYPH_OK $tracked_count tracked, $ignored_count newly ignored"
+    echo "  $GLYPH_OK "(_n $tracked_count)" tracked, "(_n $ignored_count)" newly ignored"
 end
 
 # Catch hand-edits to already-tracked dotfiles under home/ (the symlink-target
@@ -766,7 +790,7 @@ end
 
 # ─── Pass 2: fisher drift ─────────────────────────────────────────────────
 echo ""
-echo "$HEAD_OPEN─── Fisher drift ───$HEAD_CLOSE"
+_header "Fisher drift"
 set -l plugin_changed no
 if not command -q fish; or not functions -q fisher
     echo "  fisher not installed; skipping."
@@ -797,10 +821,10 @@ else
     set -l fish_removed 0
 
     if test (count $plugin_added) -gt 0
-        echo "  Installed but NOT in fish_plugins ("(count $plugin_added)"):"
+        echo "  Installed but NOT in fish_plugins ("(_n (count $plugin_added))"):"
         for plugin in $plugin_added
             echo ""
-            echo "    $plugin"
+            echo "    "(_name $plugin)
             if test "$_dry_run" = yes
                 continue
             end
@@ -834,10 +858,10 @@ else
 
     if test (count $plugin_missing) -gt 0
         echo ""
-        echo "  In fish_plugins but NOT installed ("(count $plugin_missing)"):"
+        echo "  In fish_plugins but NOT installed ("(_n (count $plugin_missing))"):"
         for plugin in $plugin_missing
             echo ""
-            echo "    $plugin"
+            echo "    "(_name $plugin)
             if test "$_dry_run" = yes
                 continue
             end
@@ -878,7 +902,7 @@ else
     # Summary: only if any work happened. Otherwise the "fisher list matches
     # fish_plugins" ok-line above is the summary.
     if test (math $fish_tracked + $fish_uninstalled + $fish_installed + $fish_removed) -gt 0
-        echo "  $GLYPH_OK $fish_tracked tracked, $fish_uninstalled uninstalled, $fish_installed installed, $fish_removed removed from fish_plugins"
+        echo "  $GLYPH_OK "(_n $fish_tracked)" tracked, "(_n $fish_uninstalled)" uninstalled, "(_n $fish_installed)" installed, "(_n $fish_removed)" removed from fish_plugins"
     end
 end
 
@@ -895,7 +919,7 @@ end
 #   - prompt [t]rack / [i]gnore forever / [s]kip / [q]uit per remaining group
 #   - on track: append pattern to .univexport, regenerate exported-univ-vars.fish
 echo ""
-echo "$HEAD_OPEN─── Univ-var drift ───$HEAD_CLOSE"
+_header "Univ-var drift"
 
 set -l univ_export_file $repo/.univexport
 set -l univ_ignore_file $repo/.univignore
@@ -999,7 +1023,7 @@ if test "$_dry_run" = no
     end
 
     if test $auto_skipped_private -gt 0
-        echo "  $GLYPH_DIM auto-skipped $auto_skipped_private private var(s) (leading _ — fish/plugin internals; add exact name to .univexport to opt in)"
+        echo "  $GLYPH_DIM auto-skipped "(_n $auto_skipped_private)" private var(s) (leading _ — fish/plugin internals; add exact name to .univexport to opt in)"
     end
 
     set -l univ_tracked 0
@@ -1007,7 +1031,7 @@ if test "$_dry_run" = no
     if test (count $drift_prefixes) -eq 0; and test (count $drift_standalone) -eq 0
         echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)"
     else
-        echo "  Found "(math (count $drift_prefixes) + (count $drift_standalone))" untracked group(s)/var(s)"
+        echo "  Found "(_n (math (count $drift_prefixes) + (count $drift_standalone)))" untracked group(s)/var(s)"
 
 
         # Prompt per prefix-group
@@ -1021,9 +1045,9 @@ if test "$_dry_run" = no
             end
             set -l count (count $members)
             echo ""
-            echo "    prefix `$prefix*` — $count var(s):"
+            echo "    prefix "(_name "$prefix*")" — "(_n $count)" var(s):"
             for m in $members
-                echo "      $m"
+                echo "      "(_name $m)
             end
             while true
                 read -P (_prompt)"    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
@@ -1058,7 +1082,7 @@ if test "$_dry_run" = no
         # Prompt per standalone (no-underscore) var, asking by exact name
         for name in $drift_standalone
             echo ""
-            echo "    standalone (no prefix): $name = "(string join " " $$name)
+            echo "    standalone (no prefix): "(_name $name)" = "(string join " " $$name)
             while true
                 read -P (_prompt)"    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
                 switch $choice
@@ -1100,7 +1124,7 @@ if test "$_dry_run" = no
     # Summary: only when work happened (the "no univ-var drift" ok-line above
     # already serves as the no-work summary).
     if test (math $univ_tracked + $univ_ignored) -gt 0
-        echo "  $GLYPH_OK $univ_tracked tracked, $univ_ignored newly ignored"
+        echo "  $GLYPH_OK "(_n $univ_tracked)" tracked, "(_n $univ_ignored)" newly ignored"
     end
 end
 
@@ -1110,7 +1134,7 @@ end
 # means "defer; ask me again next run." dump-brewfile is still used to
 # DETECT drift (read-only comparison), just not to write back changes.
 echo ""
-echo "$HEAD_OPEN─── Brew drift ───$HEAD_CLOSE"
+_header "Brew drift"
 if not command -q brew
     echo "  brew not installed; skipping."
 else
@@ -1284,9 +1308,9 @@ else
     # happened; the "Brewfile matches installed state" ok-line above is the
     # no-work summary.
     if test "$_dry_run" = yes; and test (math (count $added) + (count $missing)) -gt 0
-        echo "  $GLYPH_DIM dry run — "(count $added)" untracked, "(count $missing)" missing, nothing changed"
+        echo "  $GLYPH_DIM dry run — "(_n (count $added))" untracked, "(_n (count $missing))" missing, nothing changed"
     else if test (math $brew_tracked + $brew_ignored + $brew_installed + $brew_removed) -gt 0
-        echo "  $GLYPH_OK $brew_tracked tracked, $brew_ignored ignored, $brew_installed installed, $brew_removed removed"
+        echo "  $GLYPH_OK "(_n $brew_tracked)" tracked, "(_n $brew_ignored)" ignored, "(_n $brew_installed)" installed, "(_n $brew_removed)" removed"
     end
 end
 
@@ -1308,7 +1332,7 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
     pushd $repo >/dev/null
     if test (git status --porcelain | count) -gt 0
         echo ""
-        echo "$HEAD_OPEN─── Commit ───$HEAD_CLOSE"
+        _header "Commit"
         git add -A
 
         if test -z "$WRANGLE_ALLOW_SECRETS"
@@ -1346,7 +1370,7 @@ if test "$_dry_run" = no; and test "$_committed" = yes; and test "$_claude_opt" 
         echo "  $GLYPH_DIM claude not installed; skipping doc review."
     else
         echo ""
-        echo "$HEAD_OPEN─── Doc sync ───$HEAD_CLOSE"
+        _header "Doc sync"
 
         # Build context: changes from this run + any pending from prior runs.
         set -l prompt_text "You are claude-code invoked by `wrangle` (the dotfiles repo's sync command) at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
@@ -1432,18 +1456,18 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_PUSH"
 
         if test $unpushed -gt 0
             echo ""
-            echo "$HEAD_OPEN─── Push ───$HEAD_CLOSE"
+            _header "Push"
             echo ""
             if test $upstream_exists = yes
-                echo "  $unpushed commit(s) ahead of $remote/$branch:"
-                git log --pretty='    %h %s' '@{u}..HEAD'
+                echo "  "(_n $unpushed)" commit(s) ahead of "(_name "$remote/$branch")":"
+                git --no-pager log --color=always --pretty='    %C(yellow)%h%Creset %s' '@{u}..HEAD'
                 echo ""
                 echo "  Changed files:"
-                git diff --stat '@{u}..HEAD' | sed 's/^/    /'
+                git --no-pager diff --stat --color=always '@{u}..HEAD' | sed 's/^/    /'
             else
-                echo "  Branch '$branch' has no upstream yet — first push will set it on $remote."
+                echo "  Branch "(_name $branch)" has no upstream yet — first push will set it on "(_name $remote)"."
                 echo "  Last commit:"
-                git log -1 --pretty='    %h %s'
+                git --no-pager log -1 --color=always --pretty='    %C(yellow)%h%Creset %s'
             end
 
             while true
