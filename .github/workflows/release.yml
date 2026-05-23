@@ -1,0 +1,75 @@
+name: release
+
+# Cuts a new vX.Y.Z tag + GitHub Release whenever a PR merges into main with
+# a `release:patch` / `release:minor` / `release:major` label. PRs without a
+# release label merge normally but don't bump the version.
+#
+# Trust model: we don't re-run the test suite here. Branch protection on main
+# requires the `tests` workflow to pass on the up-to-date PR before the merge
+# button enables, so the just-merged commit is already known-good.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      bump: ${{ steps.label.outputs.bump }}
+    steps:
+      - name: Pick highest-precedence release label
+        id: label
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$LABELS" | grep -q '"release:major"'; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q '"release:minor"'; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q '"release:patch"'; then
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release:* label on PR #${{ github.event.pull_request.number }} — skipping tag/release."
+          fi
+
+  release:
+    needs: detect
+    if: needs.detect.outputs.bump != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0       # need full tag history for bump-version
+          ref: main
+
+      - name: Make sure we're on main (not detached HEAD)
+        run: git checkout main
+
+      - name: Configure bot identity for the tag
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Compute + push next tag
+        id: tag
+        run: |
+          ./scripts/bump-version "${{ needs.detect.outputs.bump }}"
+          NEXT=$(git describe --tags --abbrev=0 --match 'v*')
+          echo "tag=$NEXT" >> "$GITHUB_OUTPUT"
+          git push origin "$NEXT"
+
+      - name: Create GitHub Release with auto-generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --title "${{ steps.tag.outputs.tag }}" \
+            --generate-notes

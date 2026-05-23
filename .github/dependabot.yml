@@ -1,0 +1,19 @@
+version: 2
+
+# Dependabot for this repo only has one ecosystem to scan: the github-actions
+# we pin in .github/workflows/*.yml (currently just actions/checkout). Everything
+# else the framework uses (fish, fisher, fishtape, stow, brew, mas) is outside
+# Dependabot's coverage.
+#
+# Dependabot PRs are NOT auto-labeled `release:patch` — a CI base bump doesn't
+# automatically warrant cutting a release. Add the label manually before merging
+# if you want this Dependabot PR to ship as a patch version.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    target-branch: main
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies

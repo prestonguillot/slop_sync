@@ -85,15 +85,27 @@ wrangle --help                # full flag reference
 
 ## Releasing framework updates (for repo maintainers)
 
+Framework changes ship through a PR-driven flow. Tagging and the GitHub Release are automated — you don't run `bump-version` by hand in the normal case.
+
 ```fish
-git checkout main                       # do framework work on main
+git checkout main && git pull
+git checkout -b some-change
 # … edit scripts/, tests, docs …
 git commit -am "describe the change"
-./scripts/bump-version                  # creates next minor v* tag (use `patch` or `major` for other bumps)
-git push origin main vX.Y.Z
-git checkout personal                   # bring framework updates into your personal layer
-git merge main
-git push origin personal
+git push -u origin some-change
+gh pr create --base main --title "..." --label release:patch   # or release:minor / release:major
+```
+
+When the PR is green and you merge it (rebase merge — main stays linear), `.github/workflows/release.yml` reads the `release:*` label, calls `scripts/bump-version`, pushes the next `vX.Y.Z` tag, and creates a GitHub Release with auto-generated notes from the merged commits.
+
+PRs without a `release:*` label merge normally but don't bump the version — use that for changes that aren't user-visible (CI tweaks, README typos, etc.). To release after the fact, label another PR or use `scripts/bump-version` locally as a hotfix escape hatch.
+
+Bring framework updates into your personal layer afterwards:
+
+```fish
+git checkout personal
+git pull --rebase origin main
+git push
 ```
 
 ## Key principles
