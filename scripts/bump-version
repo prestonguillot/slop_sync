@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# bump-version — tag the current main HEAD with the next semver version.
+#
+# Usage:
+#   bump-version             # minor bump (default): vX.Y.Z → vX.(Y+1).0
+#   bump-version patch       # patch bump:           vX.Y.Z → vX.Y.(Z+1)
+#   bump-version major       # major bump:           vX.Y.Z → v(X+1).0.0
+#   bump-version --dry-run   # print what would happen, don't tag
+#
+# Asserts you're on `main` before tagging (framework changes only live on main).
+# Doesn't push — prints the push command for you to run.
+
+set -eu
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+cd "$REPO_DIR"
+
+BUMP="minor"
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        patch|minor|major) BUMP="$arg" ;;
+        --dry-run|-n) DRY_RUN=1 ;;
+        -h|--help)
+            sed -n '2,12p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            echo "✗ Unknown argument: $arg" >&2
+            echo "Usage: bump-version [patch|minor|major] [--dry-run]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# Assert on main.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$BRANCH" != "main" ]; then
+    echo "✗ bump-version must run on main (currently on '$BRANCH')." >&2
+    echo "  Switch with: git checkout main" >&2
+    exit 1
+fi
+
+# Find the latest v* tag (semver-sorted).
+LATEST="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+if [ -z "$LATEST" ]; then
+    # No tags yet — treat as v0.0.0 so a minor bump produces v0.1.0
+    LATEST="v0.0.0"
+    echo "→ No existing v* tag found; treating current as $LATEST"
+fi
+
+# Parse X.Y.Z from vX.Y.Z.
+VERSION="${LATEST#v}"
+MAJOR="${VERSION%%.*}"
+REST="${VERSION#*.}"
+MINOR="${REST%%.*}"
+PATCH="${REST#*.}"
+
+# Validate parse.
+if ! echo "$MAJOR$MINOR$PATCH" | grep -qE '^[0-9]+$'; then
+    echo "✗ Couldn't parse '$LATEST' as semver vX.Y.Z" >&2
+    exit 1
+fi
+
+# Compute next.
+case "$BUMP" in
+    major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+    minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+    patch) PATCH=$((PATCH + 1)) ;;
+esac
+
+NEXT="v${MAJOR}.${MINOR}.${PATCH}"
+
+if [ "$DRY_RUN" = "1" ]; then
+    echo "Dry run: would tag $NEXT on $(git rev-parse --short HEAD) ($BUMP bump from $LATEST)"
+    exit 0
+fi
+
+# Tag annotated; include the bump type in the message.
+git tag -a "$NEXT" -m "$NEXT: $BUMP bump from $LATEST"
+
+echo "✓ Created tag $NEXT on $(git rev-parse --short HEAD)"
+echo ""
+echo "Push when ready:"
+echo "  git push origin main $NEXT"
+echo ""
+echo "Then merge into personal:"
+echo "  git checkout personal && git merge main && git push origin personal"
