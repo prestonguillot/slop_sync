@@ -681,8 +681,8 @@ if set -q _flag_review_docs
     set -l prompt_text "You are claude-code invoked by `wrangle --review-docs` at $repo. The user has explicitly asked you to review the repo's documentation against the current state of the repo and recent activity. There are no specific changes from a wrangle run this time — your job is to look at the recent commits and current docs and propose updates if anything is factually wrong, out of date, or incomplete.
 
 The repo has two doc tiers:
-  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live in the genesys commit and should stay opinion-free.
-  - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live in personal-layer commits. A common convention is a top-level PERSONAL.md.
+  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free.
+  - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live on the machine-branch (default: `personal`). A common convention is a top-level PERSONAL.md.
 
 You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/.
 
@@ -1655,8 +1655,8 @@ if test "$_dry_run" = no; and test "$_committed" = yes; and test "$_claude_opt" 
         set -l prompt_text "You are claude-code invoked by `wrangle` (the dotfiles repo's sync command) at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
 
 The repo has two documentation tiers:
-  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live in the genesys commit and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
-  - PERSONAL docs describe the user's specific layer on top: post-bootstrap manual steps, tool-specific auth flows, machine-specific setup notes. These live in personal-layer commits. Create or update them when the personal layer (Brewfile, tracked dotfiles, fish_plugins) adds something with known post-install or first-time-setup needs that aren't documented elsewhere. A common convention is a top-level PERSONAL.md, but you can split into multiple docs if it makes sense.
+  - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
+  - PERSONAL docs describe the user's specific layer on top: post-bootstrap manual steps, tool-specific auth flows, machine-specific setup notes. These live on the machine-branch (default: `personal`). Create or update them when the machine-branch (Brewfile, tracked dotfiles, fish_plugins) adds something with known post-install or first-time-setup needs that aren't documented elsewhere. A common convention is a top-level PERSONAL.md, but you can split into multiple docs if it makes sense.
 
 You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/. Those are managed by other parts of the system.
 
