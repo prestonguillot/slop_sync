@@ -1,26 +1,31 @@
-# dotfiles
+# wrangle
 
 A sync system for keeping your macOS shell + tooling state consistent across machines, without ever asking you to maintain the inventory by hand.
+
+> The repo's still called `slop_sync` because the name is funny. The project itself is `wrangle`.
 
 ## What this is
 
 You install tools, write dotfiles, install fisher plugins, configure plugins via fish universals. Over time your machine drifts from anything you've checked in. Normally you'd notice this only when standing up a new machine — at which point you scramble to reconstruct what you had.
 
-`wrangle` is a fish script that walks your live machine, compares its actual state against what's tracked in this repo, and per-difference asks you what to do: track it, ignore it forever, or skip for now. When you say track, it captures the thing into the repo in the appropriate form:
+Wrangle is a fish script that turns "the current state of my machine" into something **git-tracked, branchable per-machine, and replayable on a fresh box**. The way it does that:
 
-- **Dotfiles** go under `home/` and get [GNU stow](https://www.gnu.org/software/stow/)–symlinked back into `~`. Editing `~/.config/foo` and editing `home/.config/foo` are the same file on disk.
-- **Brew formulae / casks / Mac App Store apps** go into a `Brewfile` (auto-generated via `brew bundle dump`, filtered against your `.brewignore`).
-- **Fisher plugins** go into `fish_plugins` (which fisher itself reads on `fisher update`).
-- **Fish universal variables** that plugins like tide use for config get captured to a sourceable file you can replay on another machine.
+- It walks your live machine each run, finds drift between what's installed/configured and what's tracked, and asks you per-item: track it, ignore it forever, or skip. The capture strategy is domain-specific:
+  - **Dotfiles** go under `home/` and get [GNU stow](https://www.gnu.org/software/stow/)–symlinked back into `~`, so editing `~/.config/foo` and editing `home/.config/foo` are the same file.
+  - **Brew formulae, casks, and Mac App Store apps** go into a `Brewfile` (via `brew bundle dump`, filtered through your `.brewignore`). On a new machine, `brew bundle install` (or wrangle's own prompt) reinstalls everything from that file.
+  - **Fisher plugins** go into `fish_plugins`, which fisher itself reads on `fisher update`.
+  - **Fish universal variables** (the ones plugins like tide use for config) get captured into a sourceable file you can replay on another machine.
 
-When wrangle commits, it runs a regex secret-scan over the staged diff first (AWS / GitHub / Stripe / OpenAI / Anthropic keys, JWTs, PEM blocks) and refuses to commit on a hit unless you explicitly bypass.
+- The whole repo is a **git repo with a branch per machine**. Wrangle's commits go to your machine's branch; framework changes (the wrangle script itself, etc.) live on `main`. Branches declare a parent so updates flow downstream — your laptop branches off `main`, your work machine can branch off your laptop, etc. The `wrangle pull` / `sync` / `push` subcommands wrap the git-side mechanics so you rarely touch git directly.
 
-Optionally — opt-in on first run — wrangle invokes [claude-code](https://github.com/anthropics/claude-code) to summarize commit diffs into nicer commit messages and to keep the repo's docs in sync with the changes you've been making. You can leave claude turned off and the rest works fine.
+- Every commit goes through a **pre-commit regex secret-scan** that catches the obvious shapes (AWS / GitHub / Stripe / OpenAI / Anthropic keys, JWTs, PEM / SSH / PGP blocks). On a hit wrangle refuses to commit unless you set `WRANGLE_ALLOW_SECRETS=1`.
 
-You drive everything through the `wrangle` command. Day-to-day there are three subcommands that matter:
+- Wrangle optionally uses [claude-code](https://github.com/anthropics/claude-code) for two things: summarizing commit diffs into nicer commit messages, and reviewing the repo's docs when changes accumulate. Both are opt-in; first run asks. Everything else works with claude off.
+
+Day-to-day there are three subcommands that matter:
 
 - `wrangle sync` — the main one: detect drift, ask per-item, commit, optionally push.
-- `wrangle pull` — bring framework updates (or upstream personal changes) down.
+- `wrangle pull` — bring framework updates (or upstream parent-branch changes) down.
 - `wrangle push` — push your current branch's commits.
 
 `wrangle help` lists the rest.
@@ -151,7 +156,7 @@ There are four user-editable files at the repo root that wrangle reads. All take
 
 All four can be edited by hand. Wrangle also writes to them when you answer `[t]rack` or `[i]gnore forever` during a sync, so you usually don't have to.
 
-The dotfile pass has an additional built-in skiplist of credential paths (`.aws`, `.config/gh`, `.kube`, …) and globs (`*.pem`, `*_rsa`, `id_*`, …) that takes effect even with `--force`. Those live in `scripts/wrangle`; edit there if you need to.
+The default `.dotignore` ships pre-populated with credential paths, key-file globs, common shell/OS noise, and tool caches that you almost certainly don't want to sync. Delete any line you disagree with. `wrangle sync --force` bypasses `.dotignore` entirely (including the credential entries) — the pre-commit secret-scan is the secondary safety net that catches anything obvious in that case.
 
 ## Shell integration
 
@@ -222,5 +227,5 @@ Released framework updates flow into your machine-branch the next time you run `
 
 - **Non-destructive.** Nothing overwrites existing user files. `bootstrap` only does idempotent appends + chsh + brew installs. `wrangle` only moves files when you say `[t]rack`.
 - **Inventories are auto-captured.** Brewfile, fish_plugins, the dotfile tree, the captured universals — wrangle maintains them. You don't hand-edit them.
-- **Secrets stay out by construction.** Credential paths are in the built-in skiplist, key files are glob-skipped, and a pre-commit regex scan catches anything that slips through.
+- **Secrets stay out by construction.** Credential paths and key-file globs are pre-populated in `.dotignore`, and a pre-commit regex secret-scan catches anything that slips through.
 - **LLM-optional.** Wrangle can use claude-code to keep docs in sync and to summarize diffs into commit messages, but the rest works fine with claude off. Opt-in is asked on first run, controllable per-run via `--with-claude` / `--suppress-claude`.
