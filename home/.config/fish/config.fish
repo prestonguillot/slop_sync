@@ -32,6 +32,38 @@ alias ll 'eza -la --git --icons'
 alias la 'eza -a --icons'
 alias l 'eza --icons'
 alias ls 'eza --icons'
+function lr --description 'eza -R with depth (default 1)'
+    set -l depth 1
+    if test (count $argv) -gt 0; and string match -qr '^\d+$' -- $argv[1]
+        set depth $argv[1]
+        set -e argv[1]
+    end
+    eza -R -L $depth --icons $argv
+end
+function lt --description 'eza -T with depth (default 1)'
+    set -l depth 1
+    if test (count $argv) -gt 0; and string match -qr '^\d+$' -- $argv[1]
+        set depth $argv[1]
+        set -e argv[1]
+    end
+    eza -T -L $depth --icons $argv
+end
+function lar --description 'eza -aR with depth (default 1)'
+    set -l depth 1
+    if test (count $argv) -gt 0; and string match -qr '^\d+$' -- $argv[1]
+        set depth $argv[1]
+        set -e argv[1]
+    end
+    eza -aR -L $depth --icons $argv
+end
+function lat --description 'eza -aT with depth (default 1)'
+    set -l depth 1
+    if test (count $argv) -gt 0; and string match -qr '^\d+$' -- $argv[1]
+        set depth $argv[1]
+        set -e argv[1]
+    end
+    eza -aT -L $depth --icons $argv
+end
 alias h 'cd ~'
 
 alias htop btop
