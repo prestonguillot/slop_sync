@@ -1,4 +1,5 @@
 .DS_Store
+*.bak
 *.bak.*
 
 # wrangle's per-machine changelog: a running log of structural changes,
