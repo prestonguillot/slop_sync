@@ -2,6 +2,23 @@
 *.bak
 *.bak.*
 
+# Editor swap/backup files (vim, emacs, generic)
+*.swp
+*.swo
+*.swn
+*~
+
+# macOS noise (AppleDouble resource forks from cross-filesystem copies)
+._*
+
+# Windows noise (cheap safety even though this repo is macOS-focused)
+Thumbs.db
+Desktop.ini
+
+# Env files — extra belt-and-suspenders on top of scan-secrets
+.env
+.env.*
+
 # wrangle's per-machine changelog: a running log of structural changes,
 # used as a queue for claude doc-review. Machine-local state — different
 # per machine, would cause constant merge conflicts if tracked.
