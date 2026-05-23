@@ -33,7 +33,7 @@
 # Env vars:
 #   Opt-outs (all features default-on when applicable):
 #     WRANGLE_NO_COMMIT=1          skip auto-commit
-#     WRANGLE_NO_PUSH=1            skip push prompt (won't set unpushed flag)
+#     WRANGLE_NO_PUSH=1            skip push prompt
 #     WRANGLE_NO_PUSH_NAG=1        silence the unpushed-commits nag in new shells
 #     WRANGLE_NO_STALENESS_NAG=1   silence the "wrangle hasn't run in N days" nag
 #     WRANGLE_NO_BRANCH_SWITCH=1   skip the auto-switch to personal branch
@@ -1204,15 +1204,12 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
                         set -l push_rv $status
                         _spinner_stop
                         if test $push_rv -eq 0
-                            rm -f $cache_dir/unpushed
                             echo "  $GLYPH_OK pushed"
                         else
-                            echo "  $GLYPH_WARN push failed; flagging for nag"
-                            touch $cache_dir/unpushed
+                            echo "  $GLYPH_WARN push failed (shells will nag; silence with WRANGLE_NO_PUSH_NAG=1)"
                         end
                         break
                     case n N no ''
-                        touch $cache_dir/unpushed
                         echo "  $GLYPH_DIM skipped. New shells will nag until you push (silence with WRANGLE_NO_PUSH_NAG=1)."
                         break
                     case '*'
