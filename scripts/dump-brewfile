@@ -47,7 +47,10 @@ if set -q _flag_input
     end
     cp $_flag_input $tmp_dump
 else
-    brew bundle dump --describe --force --file $tmp_dump
+    # Suppress brew's API-cache refresh chatter ("✔︎ JSON API cask.jws.json …
+    # Downloaded …MB") which is informational noise that pollutes wrangle's
+    # output. Real errors still surface via the exit-status check below.
+    brew bundle dump --describe --force --file $tmp_dump >/dev/null 2>&1
     or begin
         rm -f $tmp_dump
         exit 1

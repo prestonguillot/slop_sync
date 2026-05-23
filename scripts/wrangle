@@ -7,7 +7,7 @@
 #                           orphan-symlink check → dangling symlinks pointing into home/
 #    0. Re-stow           — link any new files in home/ to ~
 #    1. Dotfile drift     — untracked files in ~/.config + ~ → [t/i/s/q]
-#    2. Fisher plugin drift — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
+#    2. Fisher drift      — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
 #    3. Univ-var drift    — installed fish universals (per-prefix) → [t/i/s/q]
 #    4. Brew drift        — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
 #    4. Changelog         — append summary of changes to .wrangle-changelog
@@ -496,7 +496,7 @@ end
 
 if test (count $yoink_candidates) -gt 0
     echo "$HEAD_OPEN─── Yoink check ───$HEAD_CLOSE"
-    echo "Files in home/ but missing from ~ ("(count $yoink_candidates)") — looks like you removed them:"
+    echo "  Files in home/ but missing from ~ ("(count $yoink_candidates)") — looks like you removed them:"
     for rel in $yoink_candidates
         echo ""
         echo "    home/$rel"
@@ -552,7 +552,7 @@ end
 if test (count $orphan_symlinks) -gt 0
     echo ""
     echo "$HEAD_OPEN─── Orphan symlinks ───$HEAD_CLOSE"
-    echo "Symlinks in ~ pointing into home/ whose targets no longer exist ("(count $orphan_symlinks)"):"
+    echo "  Symlinks in ~ pointing into home/ whose targets no longer exist ("(count $orphan_symlinks)"):"
     for path in $orphan_symlinks
         echo ""
         echo "    $path → "(readlink $path)
@@ -681,6 +681,8 @@ function _add_ignore --inherit-variable ignore_file
 end
 
 # ─── Pass 1: dotfile drift ────────────────────────────────────────────────
+echo ""
+echo "$HEAD_OPEN─── Dotfile drift ───$HEAD_CLOSE"
 set -l candidates
 for f in $HOME/.[A-Za-z0-9]*
     test -L $f; and continue
@@ -698,12 +700,12 @@ for f in $HOME/.config/*
 end
 
 if test (count $candidates) -eq 0
-    echo "No untracked dotfiles in scope."
+    echo "  $GLYPH_OK no untracked dotfiles in scope"
 else
     set -l mode_hint
     test "$_dry_run" = yes; and set mode_hint " (dry run — no prompts)"
     test "$_force" = yes; and set mode_hint "$mode_hint (--force: ignore list bypassed)"
-    echo "Found "(count $candidates)" untracked path(s)$mode_hint."
+    echo "  Found "(count $candidates)" untracked path(s)$mode_hint."
 end
 
 set -l tracked_count 0
@@ -739,11 +741,12 @@ for rel in $candidates
     end
 end
 
-echo ""
-if test "$_dry_run" = yes
-    echo "Summary (dotfiles, dry run): "(count $candidates)" untracked path(s) listed."
-else
-    echo "Summary (dotfiles): $tracked_count tracked, $ignored_count newly ignored."
+# Summary: only print a counts line when work actually happened (or in dry-run);
+# otherwise the "no untracked dotfiles" ok-line above already conveys "all good".
+if test "$_dry_run" = yes; and test (count $candidates) -gt 0
+    echo "  $GLYPH_DIM dry run — "(count $candidates)" untracked path(s) listed, nothing changed"
+else if test $tracked_count -gt 0; or test $ignored_count -gt 0
+    echo "  $GLYPH_OK $tracked_count tracked, $ignored_count newly ignored"
 end
 
 # Catch hand-edits to already-tracked dotfiles under home/ (the symlink-target
@@ -761,9 +764,9 @@ if test (count $home_dirty) -gt 0
     _log_change (count $home_dirty)" tracked dotfile(s) hand-edited under home/"
 end
 
-# ─── Pass 2: fisher plugin drift ──────────────────────────────────────────
+# ─── Pass 2: fisher drift ─────────────────────────────────────────────────
 echo ""
-echo "$HEAD_OPEN─── Fisher plugin drift ───$HEAD_CLOSE"
+echo "$HEAD_OPEN─── Fisher drift ───$HEAD_CLOSE"
 set -l plugin_changed no
 if not command -q fish; or not functions -q fisher
     echo "  fisher not installed; skipping."
@@ -788,6 +791,11 @@ else
         echo "  $GLYPH_OK fisher list matches fish_plugins."
     end
 
+    set -l fish_tracked 0
+    set -l fish_uninstalled 0
+    set -l fish_installed 0
+    set -l fish_removed 0
+
     if test (count $plugin_added) -gt 0
         echo "  Installed but NOT in fish_plugins ("(count $plugin_added)"):"
         for plugin in $plugin_added
@@ -802,11 +810,13 @@ else
                     case t T track
                         echo $plugin >> $plugins_file_path
                         set plugin_changed yes
+                        set fish_tracked (math $fish_tracked + 1)
                         _log_change "tracked fisher plugin: $plugin"
                         echo "      $GLYPH_OK added to fish_plugins"
                         break
                     case i I ignore uninstall
                         fish -c "fisher remove $plugin"
+                        set fish_uninstalled (math $fish_uninstalled + 1)
                         _log_change "uninstalled fisher plugin: $plugin"
                         echo "      $GLYPH_OK uninstalled"
                         break
@@ -836,6 +846,7 @@ else
                 switch $choice
                     case i I install
                         fish -c "fisher install $plugin"
+                        set fish_installed (math $fish_installed + 1)
                         _log_change "installed fisher plugin: $plugin"
                         break
                     case r R remove
@@ -843,6 +854,7 @@ else
                         grep -v -F -x -- "$plugin" $plugins_file_path > $tmp_p
                         mv $tmp_p $plugins_file_path
                         set plugin_changed yes
+                        set fish_removed (math $fish_removed + 1)
                         _log_change "removed fisher plugin from fish_plugins: $plugin"
                         echo "      $GLYPH_OK removed from fish_plugins"
                         break
@@ -862,6 +874,12 @@ else
     # `foo` to the file before this pass ran, so installed-vs-file matches
     # but the file is still dirty relative to its last commit.
     _report_external_changes "fish_plugins has uncommitted changes" home/.config/fish/fish_plugins
+
+    # Summary: only if any work happened. Otherwise the "fisher list matches
+    # fish_plugins" ok-line above is the summary.
+    if test (math $fish_tracked + $fish_uninstalled + $fish_installed + $fish_removed) -gt 0
+        echo "  $GLYPH_OK $fish_tracked tracked, $fish_uninstalled uninstalled, $fish_installed installed, $fish_removed removed from fish_plugins"
+    end
 end
 
 # ─── Pass 3: univ-var drift ──────────────────────────────────────────────
@@ -984,10 +1002,12 @@ if test "$_dry_run" = no
         echo "  $GLYPH_DIM auto-skipped $auto_skipped_private private var(s) (leading _ — fish/plugin internals; add exact name to .univexport to opt in)"
     end
 
+    set -l univ_tracked 0
+    set -l univ_ignored 0
     if test (count $drift_prefixes) -eq 0; and test (count $drift_standalone) -eq 0
-        echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)."
+        echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)"
     else
-        echo "  Found "(math (count $drift_prefixes) + (count $drift_standalone))" untracked groups/vars."
+        echo "  Found "(math (count $drift_prefixes) + (count $drift_standalone))" untracked group(s)/var(s)"
 
 
         # Prompt per prefix-group
@@ -1013,6 +1033,7 @@ if test "$_dry_run" = no
                         echo "      $GLYPH_OK added `$prefix*` to .univexport"
                         _log_change "tracked univ-var pattern: $prefix*"
                         set univ_changed yes
+                        set univ_tracked (math $univ_tracked + 1)
                         break
                     case i I ignore
                         echo "$prefix*" >> $univ_ignore_file
@@ -1021,6 +1042,7 @@ if test "$_dry_run" = no
                         echo "      $GLYPH_DIM      add its exact name on its own line in .univexport"
                         echo "      $GLYPH_DIM      ($repo/.univexport — exact names match like patterns)"
                         _log_change "ignored univ-var pattern: $prefix*"
+                        set univ_ignored (math $univ_ignored + 1)
                         break
                     case s S skip ''
                         echo "      $GLYPH_DIM skipped (will ask again next run)"
@@ -1045,11 +1067,13 @@ if test "$_dry_run" = no
                         echo "      $GLYPH_OK added `$name` to .univexport"
                         _log_change "tracked univ-var: $name"
                         set univ_changed yes
+                        set univ_tracked (math $univ_tracked + 1)
                         break
                     case i I ignore
                         echo $name >> $univ_ignore_file
                         echo "      $GLYPH_OK added `$name` to .univignore"
                         _log_change "ignored univ-var: $name"
+                        set univ_ignored (math $univ_ignored + 1)
                         break
                     case s S skip ''
                         echo "      $GLYPH_DIM skipped (will ask again next run)"
@@ -1072,6 +1096,12 @@ if test "$_dry_run" = no
     # Catch hand-edits to .univexport / .univignore (e.g. user manually added
     # an exact name to opt-in a normally-auto-skipped private var).
     _report_external_changes ".univexport / .univignore has uncommitted changes" .univexport .univignore
+
+    # Summary: only when work happened (the "no univ-var drift" ok-line above
+    # already serves as the no-work summary).
+    if test (math $univ_tracked + $univ_ignored) -gt 0
+        echo "  $GLYPH_OK $univ_tracked tracked, $univ_ignored newly ignored"
+    end
 end
 
 # ─── Pass 4: brew drift ───────────────────────────────────────────────────
@@ -1250,11 +1280,13 @@ else
     # with the installed state.
     _report_external_changes "Brewfile / .brewignore has uncommitted changes" Brewfile .brewignore
 
-    echo ""
-    if test "$_dry_run" = yes
-        echo "Summary (brew, dry run): "(count $added)" untracked, "(count $missing)" missing."
-    else
-        echo "Summary (brew): $brew_tracked tracked, $brew_ignored ignored, $brew_installed installed, $brew_removed removed."
+    # Summary: parallel to the other passes — only counts line when work
+    # happened; the "Brewfile matches installed state" ok-line above is the
+    # no-work summary.
+    if test "$_dry_run" = yes; and test (math (count $added) + (count $missing)) -gt 0
+        echo "  $GLYPH_DIM dry run — "(count $added)" untracked, "(count $missing)" missing, nothing changed"
+    else if test (math $brew_tracked + $brew_ignored + $brew_installed + $brew_removed) -gt 0
+        echo "  $GLYPH_OK $brew_tracked tracked, $brew_ignored ignored, $brew_installed installed, $brew_removed removed"
     end
 end
 
@@ -1314,7 +1346,7 @@ if test "$_dry_run" = no; and test "$_committed" = yes; and test "$_claude_opt" 
         echo "  $GLYPH_DIM claude not installed; skipping doc review."
     else
         echo ""
-        echo "$HEAD_OPEN─── Doc sync (claude) ───$HEAD_CLOSE"
+        echo "$HEAD_OPEN─── Doc sync ───$HEAD_CLOSE"
 
         # Build context: changes from this run + any pending from prior runs.
         set -l prompt_text "You are claude-code invoked by `wrangle` (the dotfiles repo's sync command) at $repo. Your job: keep the repo's documentation aligned with reality as changes accumulate.
