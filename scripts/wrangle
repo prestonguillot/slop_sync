@@ -170,6 +170,28 @@ function _log_change --inherit-variable _changes
     set -g _changes $_changes $argv[1]
 end
 
+# Report tracked-file modifications that didn't surface through this pass's
+# drift checks — e.g. a `fisher install` outside wrangle updates fish_plugins
+# alongside the install, so installed-vs-file matches (no drift) but the FILE
+# is dirty in git. Each drift pass calls this with its domain files so the
+# user sees the external edit AND `_changes` gets an entry (so doc-sync runs).
+#
+# Usage: _report_external_changes "description" path1 [path2 ...]
+function _report_external_changes --inherit-variable repo
+    set -l description $argv[1]
+    set -l files $argv[2..-1]
+    set -l dirty
+    for f in $files
+        if test -n "$(git -C $repo status --porcelain -- $f 2>/dev/null | string trim)"
+            set -a dirty $f
+        end
+    end
+    test (count $dirty) -eq 0; and return
+    echo "  $GLYPH_DIM $description"
+    git -C $repo diff --stat -- $dirty 2>/dev/null | sed 's/^/    /'
+    _log_change "$description"
+end
+
 # Run-abort helper. [q] in any prompt and Ctrl-C both route through here so
 # the entire run exits cleanly — previously [q] only broke the current pass
 # and fell through to the next one, and Ctrl-C was swallowed by `read` and
@@ -724,6 +746,21 @@ else
     echo "Summary (dotfiles): $tracked_count tracked, $ignored_count newly ignored."
 end
 
+# Catch hand-edits to already-tracked dotfiles under home/ (the symlink-target
+# is the same file, so an edit to ~/.config/foo IS an edit to home/.config/foo).
+# Files covered by later passes (fish_plugins, Brewfile, .univexport/.univignore)
+# are excluded — those passes report their own external changes.
+set -l home_dirty (git -C $repo diff --name-only -- home/ 2>/dev/null | string match -v 'home/.config/fish/fish_plugins')
+if test (count $home_dirty) -gt 0
+    echo ""
+    echo "  $GLYPH_DIM tracked file(s) under home/ modified outside wrangle:"
+    for f in $home_dirty
+        echo "    $f"
+    end
+    git -C $repo diff --stat -- $home_dirty 2>/dev/null | sed 's/^/    /'
+    _log_change (count $home_dirty)" tracked dotfile(s) hand-edited under home/"
+end
+
 # ─── Pass 2: fisher plugin drift ──────────────────────────────────────────
 echo ""
 echo "$HEAD_OPEN─── Fisher plugin drift ───$HEAD_CLOSE"
@@ -819,6 +856,11 @@ else
             end
         end
     end
+
+    # Catch fish_plugins modifications that happened outside this pass —
+    # e.g. `fisher install foo` updates the file directly, so installed-vs-file
+    # matches even though the file is dirty in git.
+    _report_external_changes "fish_plugins changed externally (likely a fisher install outside wrangle)" home/.config/fish/fish_plugins
 end
 
 # ─── Pass 3: univ-var drift ──────────────────────────────────────────────
@@ -1025,6 +1067,10 @@ if test "$_dry_run" = no
     if test "$univ_changed" = yes; or test -f $univ_output_file
         _univ_regenerate
     end
+
+    # Catch hand-edits to .univexport / .univignore (e.g. user manually added
+    # an exact name to opt-in a normally-auto-skipped private var).
+    _report_external_changes ".univexport / .univignore changed externally" .univexport .univignore
 end
 
 # ─── Pass 4: brew drift ───────────────────────────────────────────────────
@@ -1198,6 +1244,11 @@ else
 
     rm -f $tmp_dump
 
+    # Catch Brewfile/.brewignore modifications outside this pass — e.g. user
+    # ran `dump-brewfile` manually, hand-edited Brewfile to add a brew line,
+    # or hand-edited .brewignore.
+    _report_external_changes "Brewfile / .brewignore changed externally" Brewfile .brewignore
+
     echo ""
     if test "$_dry_run" = yes
         echo "Summary (brew, dry run): "(count $added)" untracked, "(count $missing)" missing."
@@ -1257,7 +1308,7 @@ end
 # and pushed in the same batch instead of leaving a dangling doc commit for
 # next run. claude is invoked with --permission-mode acceptEdits so it can
 # actually edit the .md files (was previously sandbox-blocked).
-if test "$_dry_run" = no; and test (count $_changes) -gt 0; and test "$_claude_opt" = on
+if test "$_dry_run" = no; and test "$_committed" = yes; and test "$_claude_opt" = on
     if not command -q claude
         echo "  $GLYPH_DIM claude not installed; skipping doc review."
     else
