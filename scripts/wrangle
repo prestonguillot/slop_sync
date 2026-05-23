@@ -10,9 +10,10 @@
 #    2. Fisher plugin drift — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
 #    3. Univ-var drift    — installed fish universals (per-prefix) → [t/i/s/q]
 #    4. Brew drift        — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
-#    5. Changelog         — write a summary of changes to .wrangle-changelog
-#    6. Commit + push     — secret-scan staged diff, commit, prompt to push
-#    7. Doc sync (opt-in) — claude-code reviews docs if you've opted in
+#    4. Changelog         — append summary of changes to .wrangle-changelog
+#    5. Commit            — secret-scan staged diff, commit with auto/llm message
+#    6. Doc sync (opt-in) — claude reviews + edits .md files; commits separately
+#    7. Push              — preview unpushed commits + stat; [y/N/d=diff] prompt
 #    8. First-run opt-in  — on the very first run, ask about claude integration
 #
 # Prompts use consistent letters:
@@ -200,7 +201,12 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     echo "  $GLYPH_DIM model=$model · effort=$effort · session="(string sub --start=1 --length=8 -- $session_id)"…"
     echo ""
 
-    claude -p --output-format text --model $model --effort $effort --session-id $session_id "$argv[1]"
+    # --permission-mode acceptEdits: auto-approve Edit/Write on the .md files
+    # claude is asked to maintain. Bash + WebFetch etc. still require interactive
+    # approval, but in -p mode there's no TTY for that prompt, so those fail
+    # closed (claude can't shell-out or fetch from this context — intended).
+    claude -p --output-format text --permission-mode acceptEdits \
+        --model $model --effort $effort --session-id $session_id "$argv[1]"
 end
 
 # Determine effective claude opt-in once — used by Pass 5 (commit message) AND
@@ -1171,7 +1177,7 @@ if test "$_dry_run" = no; and test (count $_changes) -gt 0
     end
 end
 
-# ─── Pass 5: commit + push ────────────────────────────────────────────────
+# ─── Pass 5: commit (push happens later, after optional doc-sync) ────────
 set -g _committed no
 if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
     pushd $repo >/dev/null
@@ -1200,38 +1206,16 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
         git commit -m "$commit_msg"
         set -g _committed yes
         echo "  $GLYPH_OK committed: $commit_msg"
-
-        if test -z "$WRANGLE_NO_PUSH"; and test -n "(git remote)"
-            echo ""
-            while true
-                read -P (_prompt)"  Push to "(git remote | head -1)"? [y/N] > "(_rs) push_choice
-                switch $push_choice
-                    case y Y yes
-                        _spinner_start "Pushing to "(git remote | head -1)"…"
-                        git push 2>&1
-                        set -l push_rv $status
-                        _spinner_stop
-                        if test $push_rv -eq 0
-                            echo "  $GLYPH_OK pushed"
-                        else
-                            echo "  $GLYPH_WARN push failed (shells will nag; silence with WRANGLE_NO_PUSH_NAG=1)"
-                        end
-                        break
-                    case n N no ''
-                        echo "  $GLYPH_DIM skipped. New shells will nag until you push (silence with WRANGLE_NO_PUSH_NAG=1)."
-                        break
-                    case '*'
-                        echo "  ? '$push_choice' — y or n"
-                end
-            end
-        end
     end
     popd >/dev/null
 end
 
 # ─── Pass 6: claude-code doc review (opt-in) ──────────────────────────────
-# $_claude_opt was computed near the top so the commit-message path could
-# also use it. Reusing here.
+# Runs AFTER the main commit but BEFORE the push, so any doc edits claude
+# makes get committed (as a separate "docs:" commit so provenance is clear)
+# and pushed in the same batch instead of leaving a dangling doc commit for
+# next run. claude is invoked with --permission-mode acceptEdits so it can
+# actually edit the .md files (was previously sandbox-blocked).
 if test "$_dry_run" = no; and test (count $_changes) -gt 0; and test "$_claude_opt" = on
     if not command -q claude
         echo "  $GLYPH_DIM claude not installed; skipping doc review."
@@ -1268,15 +1252,110 @@ Recent commit history (for context — last 10 commits):
         _wrangle_invoke_claude "$prompt_text"
         set -l rv $status
         echo ""
-        if test $rv -eq 0
-            echo "  $GLYPH_OK claude finished. Review docs and re-commit if it changed anything."
+        if test $rv -ne 0
+            echo "  $GLYPH_WARN claude exited non-zero ($rv); skipping doc commit."
         else
-            echo "  $GLYPH_WARN claude exited non-zero ($rv)."
+            pushd $repo >/dev/null
+            if test (git status --porcelain | count) -eq 0
+                echo "  $GLYPH_OK no doc changes warranted by this run."
+            else
+                # Sanity check: claude was told to only touch .md files. If it
+                # modified anything else, warn loudly and leave it for the user
+                # to inspect rather than committing it.
+                set -l changed (git status --porcelain | awk '{print $2}')
+                set -l non_md
+                for f in $changed
+                    string match -q '*.md' $f; or set -a non_md $f
+                end
+                if test (count $non_md) -gt 0
+                    echo "  $GLYPH_WARN claude modified non-doc files; NOT committing:"
+                    for f in $non_md
+                        echo "    $f"
+                    end
+                    echo "  Inspect / clean up with: cd $repo && git status"
+                else
+                    git add -A
+                    git commit -m "docs: sync with wrangle run "(date -u +%Y-%m-%dT%H:%MZ) | tail -1
+                    echo "  $GLYPH_OK doc changes committed."
+                    _log_change "doc-sync committed by claude"
+                end
+            end
+            popd >/dev/null
         end
     end
 end
 
-# ─── Pass 7: claude opt-in question ──────────────────────────────────────
+# ─── Pass 7: push (with preview) ─────────────────────────────────────────
+# Shows the unpushed-commit log + file stat before prompting, with [d]iff to
+# expand into the full git diff via less. Split out from the commit pass so
+# doc-sync can interject its own commit between the two.
+if test "$_dry_run" = no; and test -z "$WRANGLE_NO_PUSH"
+    pushd $repo >/dev/null
+    set -l remote (git remote | head -1)
+    if test -n "$remote"
+        set -l branch (git rev-parse --abbrev-ref HEAD)
+        set -l upstream_exists no
+        git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; and set upstream_exists yes
+
+        set -l unpushed 0
+        if test $upstream_exists = yes
+            set unpushed (git rev-list --count '@{u}..HEAD' 2>/dev/null)
+        else
+            # No upstream yet — treat all branch commits as "to push" for preview.
+            set unpushed (git rev-list --count HEAD 2>/dev/null)
+        end
+
+        if test $unpushed -gt 0
+            echo ""
+            echo "$HEAD_OPEN─── Push ───$HEAD_CLOSE"
+            echo ""
+            if test $upstream_exists = yes
+                echo "  $unpushed commit(s) ahead of $remote/$branch:"
+                git log --pretty='    %h %s' '@{u}..HEAD'
+                echo ""
+                echo "  Changed files:"
+                git diff --stat '@{u}..HEAD' | sed 's/^/    /'
+            else
+                echo "  Branch '$branch' has no upstream yet — first push will set it on $remote."
+                echo "  Last commit:"
+                git log -1 --pretty='    %h %s'
+            end
+
+            while true
+                echo ""
+                read -P (_prompt)"  Push to $remote? [y]es / [N]o / [d]iff (full) > "(_rs) push_choice
+                switch $push_choice
+                    case d D diff
+                        if test $upstream_exists = yes
+                            git --no-pager diff --color=always '@{u}..HEAD' | less -R
+                        else
+                            git log -p --color=always | less -R
+                        end
+                        # loop back to re-prompt
+                    case y Y yes
+                        _spinner_start "Pushing to $remote…"
+                        git push 2>&1
+                        set -l push_rv $status
+                        _spinner_stop
+                        if test $push_rv -eq 0
+                            echo "  $GLYPH_OK pushed"
+                        else
+                            echo "  $GLYPH_WARN push failed (shells will nag; silence with WRANGLE_NO_PUSH_NAG=1)"
+                        end
+                        break
+                    case n N no ''
+                        echo "  $GLYPH_DIM skipped. New shells will nag until you push (silence with WRANGLE_NO_PUSH_NAG=1)."
+                        break
+                    case '*'
+                        echo "  ? '$push_choice' — y / n / d"
+                end
+            end
+        end
+    end
+    popd >/dev/null
+end
+
+# ─── Pass 8: claude opt-in question ──────────────────────────────────────
 # Fires the first time wrangle is run *after the opt-in feature exists* —
 # i.e., whenever the config file is missing. Decoupled from $_first_run
 # (which only catches truly-fresh machines) so existing users get asked
