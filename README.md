@@ -1,4 +1,4 @@
-# wrangle
+# 🤠 wrangle 
 
 A sync system for keeping your macOS shell + tooling state consistent across machines, without ever asking you to maintain the inventory by hand.
 
@@ -8,11 +8,17 @@ You install tools, write dotfiles, install fisher plugins, configure plugins via
 
 Wrangle is a fish script that turns "the current state of my machine" into something **git-tracked, branchable per-machine, and replayable on a fresh box**. The way it does that:
 
-- It walks your live machine each run, finds drift between what's installed/configured and what's tracked, and asks you per-item: track it, ignore it forever, or skip. The capture strategy is domain-specific:
-  - **Dotfiles** go under `home/` and get [GNU stow](https://www.gnu.org/software/stow/)–symlinked back into `~`, so editing `~/.config/foo` and editing `home/.config/foo` are the same file.
+- Each run, wrangle walks your live machine and compares it against the tracked state. Drift goes both ways, and the prompts differ depending on which direction is out of sync:
+  - **The machine has something the repo doesn't** (you installed a brew, added a fisher plugin, dropped a new dotfile in `~/.config/`) → wrangle prompts per item: `[t]rack` it into the repo, `[i]gnore forever`, or `[s]kip` for now.
+  - **The repo has something the machine doesn't yet** (another of your machines tracked it, you `wrangle pull`ed it down, and it's not present locally) → for fisher and brew, wrangle prompts per item: `[i]nstall` it or `[r]emove` it from the tracked list. For dotfiles, no prompt — stow symlinks newly-tracked files into `~` automatically. The one case that *does* halt is a conflict: a tracked dotfile whose target path already has a real (non-symlink) file with different contents. Stow refuses to clobber, wrangle reports the conflict, and you resolve it by hand (typically: diff, move your local copy aside, re-run — or accept the local copy and re-track it).
+  
+  Once an already-tracked dotfile is symlinked, "conflicting contents" can't happen — `~/.config/foo` and `home/.config/foo` are the same inode, so editing either is editing both. Conflicts only arise the first time a tracked file lands on a machine that already had its own version.
+
+- The capture strategy per domain:
+  - **Dotfiles** go under `home/` and get [GNU stow](https://www.gnu.org/software/stow/)–symlinked back into `~`.
   - **Brew formulae, casks, and Mac App Store apps** go into a `Brewfile` (via `brew bundle dump`, filtered through your `.brewignore`). On a new machine, `brew bundle install` (or wrangle's own prompt) reinstalls everything from that file.
   - **Fisher plugins** go into `fish_plugins`, which fisher itself reads on `fisher update`.
-  - **Fish universal variables** (the ones plugins like tide use for config) get captured into a sourceable file you can replay on another machine.
+  - **Fish universal variables** (the ones plugins like tide use for config) get captured into a sourceable file you can replay on another machine via `wrangle import-univ-vars`.
 
 - The whole repo is a **git repo with a branch per machine**. Wrangle's commits go to your machine's branch; framework changes (the wrangle script itself, etc.) live on `main`. Branches declare a parent so updates flow downstream — your laptop branches off `main`, your work machine can branch off your laptop, etc. The `wrangle pull` / `sync` / `push` subcommands wrap the git-side mechanics so you rarely touch git directly.
 
