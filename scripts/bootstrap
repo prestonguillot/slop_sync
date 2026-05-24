@@ -173,5 +173,7 @@ Now launching the first \`wrangle\` run...
 
 EOF
 
-# ── 9. Force-run wrangle in a login fish so PATH integration is live ────
-exec "$FISH_PATH" -lc 'wrangle'
+# ── 9. Force-run the first sync in a login fish so PATH integration is live.
+# Bare `wrangle` just prints help (there's no implicit-sync shortcut), so we
+# invoke `wrangle sync` explicitly here.
+exec "$FISH_PATH" -lc 'wrangle sync'

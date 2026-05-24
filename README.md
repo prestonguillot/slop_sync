@@ -17,12 +17,12 @@ Wrangle is a fish script that turns "the current state of my machine" into somet
 - The capture strategy per domain:
   - **Dotfiles** go under `home/` and get [GNU stow](https://www.gnu.org/software/stow/)–symlinked back into `~`.
   - **Brew formulae, casks, and Mac App Store apps** go into a `Brewfile` (via `brew bundle dump`, filtered through your `.brewignore`). On a new machine, `brew bundle install` (or wrangle's own prompt) reinstalls everything from that file.
-  - **Fisher plugins** go into `fish_plugins`, which fisher itself reads on `fisher update`.
+  - **Fisher plugins** go into `fish_plugins`. Wrangle calls `fisher install` / `fisher remove` itself when you accept an install/uninstall prompt.
   - **Fish universal variables** (the ones plugins like tide use for config) get captured into a sourceable file you can replay on another machine via `wrangle import-univ-vars`.
 
 - The whole repo is a **git repo with a branch per machine**. Wrangle's commits go to your machine's branch; framework changes (the wrangle script itself, etc.) live on `main`. Branches declare a parent so updates flow downstream — your laptop branches off `main`, your work machine can branch off your laptop, etc. The `wrangle pull` / `sync` / `push` subcommands wrap the git-side mechanics so you rarely touch git directly.
 
-- Every commit goes through a **pre-commit regex secret-scan** that catches the obvious shapes (AWS / GitHub / Stripe / OpenAI / Anthropic keys, JWTs, PEM / SSH / PGP blocks). On a hit wrangle refuses to commit unless you set `WRANGLE_ALLOW_SECRETS=1`.
+- Every commit goes through a **pre-commit regex secret-scan** that catches the obvious shapes (AWS / GitHub / Slack / Stripe / OpenAI / Anthropic / Google API keys, JWTs, PEM / OpenSSH / PGP private-key blocks). On a hit wrangle refuses to commit unless you set `WRANGLE_ALLOW_SECRETS=1`.
 
 - Wrangle optionally uses [claude-code](https://github.com/anthropics/claude-code) for two things: summarizing commit diffs into nicer commit messages, and reviewing the repo's docs when changes accumulate. Both are opt-in; first run asks. Everything else works with claude off.
 
@@ -71,10 +71,10 @@ Three nags fire on shell start to keep you honest: staleness (haven't run wrangl
 
 Domain-specific bits:
 
-- **Dotfiles**: wrangle walks top-level `~/.<name>` files and `~/.config/*` entries. For each one not already a symlink-into-the-repo and not on the ignore list, it offers to `[t]rack` (mv into `home/`, symlink back), `[i]gnore forever` (append to `.dotignore`), `[s]kip` (decide later), or `[q]uit`.
-- **Fisher plugins**: compares `fisher list` against the tracked `fish_plugins` file. Two directions: plugins installed but not tracked → offer to track or uninstall; plugins tracked but not installed → offer to install (with a spinner) or remove from the file.
+- **Dotfiles**: wrangle walks top-level `~/.<name>` files and `~/.config/*` entries. For each untracked entry on the machine, you get `[t]rack` (mv into `home/`, symlink back), `[i]gnore forever` (append to `.dotignore`), `[s]kip`, or `[q]uit`. The other direction (file in `home/` but missing from `~`) splits into two cases: if you previously had it and deleted it, you get a yoink prompt asking whether to remove it from the repo or restore via stow; if it's genuinely new (e.g. arrived in a pulled commit), stow symlinks it into `~` silently.
+- **Fisher plugins**: compares `fisher list` against the tracked `fish_plugins` file. Plugins installed but not tracked → `[t]rack` / `[i]gnore` (which uninstalls) / `[s]kip`. Plugins tracked but not installed → `[i]nstall` / `[r]emove from fish_plugins` / `[s]kip`.
 - **Fish universals**: collects current universals (`set -U -L`), auto-skips anything starting with `_` (fish + plugin internal convention), groups the rest by prefix. For each new prefix group, offers to track the pattern (e.g. `tide_*`) into `.univexport`, ignore forever into `.univignore`, or skip.
-- **Brew**: calls `dump-brewfile` (a thin wrapper around `brew bundle dump --describe --force` with `.brewignore` filtering applied) and diffs against your tracked `Brewfile`. Installed-but-not-tracked → track / ignore-via-substring / skip. Tracked-but-not-installed → install / remove / skip.
+- **Brew**: calls `dump-brewfile` (a thin wrapper around `brew bundle dump --describe --force`, filtered through `.brewignore`) and diffs the result against your tracked `Brewfile`. When something's installed locally but missing from the Brewfile, wrangle asks whether to track it, add a `.brewignore` substring so it stops nagging, or skip. When something's in the Brewfile but not installed locally, it asks whether to install it, drop it from the Brewfile, or skip.
 
 Wrangle also catches files that are tracked but have uncommitted changes (e.g. you edited your `config.fish` directly without running wrangle): each pass reports its domain's dirty files so they get committed alongside any newly-tracked items.
 
