@@ -309,33 +309,65 @@ if not test -f $last_run_stamp
 end
 
 # ─── Color + spinner helpers ──────────────────────────────────────────────
-# Small, opinionated palette. Box-drawing characters (─ ✓ ✗ ⚠ · → …) over
-# emoji per house style. Colors degrade to noops on non-color terminals
-# (fish's set_color handles that).
-function _h     ; set_color --bold; end           # section header
-function _ok    ; set_color green; end            # ✓ success
-function _err   ; set_color red --bold; end       # ✗ error
-function _warn  ; set_color yellow; end           # ⚠ warning
+# Three-color visual hierarchy:
+#   - Section headers (Pass titles, _header): bright magenta bold + heavy
+#     ━━━ rules. Loudest — owns the page, scans as "new orientation point."
+#   - Subheaders (per-item, _subheader): indented 2sp, cyan + light ───
+#     rules. Visually nested under the parent section.
+#   - File paths / branch names (_name): cyan, no bold. Mid-weight body
+#     accent — same idiom git uses for paths.
+#   - Input keys (_key, applied via _keys to bracketed letters): bright
+#     yellow bold. Pops as "your turn to act."
+# Other colors stay role-based: green=success, red=error, yellow=warning,
+# brblack=dim. Box-drawing characters over emoji per house style. Colors
+# degrade to noops on non-color terminals (fish's set_color handles that).
+function _h     ; set_color --bold; end           # generic bold (used by _n)
+function _ok    ; set_color brgreen --bold; end   # ✔ success
+function _err   ; set_color brred --bold; end     # ✘ error
+function _warn  ; set_color bryellow --bold; end  # ⚠ warning
 function _dim   ; set_color brblack; end          # · neutral / hint
-function _info  ; set_color cyan; end             # spinner / status banner
-function _prompt; set_color cyan --bold; end      # interactive prompt letters
+function _info  ; set_color cyan; end             # paths, branch names
+function _lead  ; set_color brcyan --bold; end    # ▸ in-body leader callout
+function _hdr   ; set_color brmagenta --bold; end # section header title
+function _sub   ; set_color cyan; end             # subheader title
+function _key   ; set_color bryellow --bold; end  # [t] [i] etc. in prompts
 function _rs    ; set_color normal; end           # reset
 
 # Glyph globals: include color + character + reset so we can drop them into
-# existing format strings without restructuring everything.
-set -g GLYPH_OK   (_ok)"✓"(_rs)
-set -g GLYPH_ERR  (_err)"✗"(_rs)
-set -g GLYPH_WARN (_warn)"⚠"(_rs)
-set -g GLYPH_DIM  (_dim)"·"(_rs)
+# existing format strings without restructuring everything. Heavy unicode
+# variants (✔ ✘) over light (✓ ✗) for more presence at normal terminal
+# weight — they need to draw the eye without emoji.
+set -g GLYPH_OK    (_ok)"✔"(_rs)
+set -g GLYPH_ERR   (_err)"✘"(_rs)
+set -g GLYPH_WARN  (_warn)"⚠"(_rs)
+set -g GLYPH_DIM   (_dim)"·"(_rs)                # separator / dim status
+set -g GLYPH_LEAD  (_lead)"▸"(_rs)               # in-body leader (calls eye)
 set -g GLYPH_ARROW (_dim)"→"(_rs)
-set -g HEAD_OPEN  (_h)
-set -g HEAD_CLOSE (_rs)
-set -g HEAD_RULE  (_dim)"───"(_rs)
+set -g HEAD_RULE   (_dim)"━━━"(_rs)
+set -g SUB_RULE    (_dim)"───"(_rs)
 
-# Print a section header: dim `───` rules flanking a bold title. Standardizes
-# every pass's header line so headers look identical across the script.
+# Print a section header: dim ━━━ rules flanking a bright-magenta-bold title.
+# Standardizes every pass's header so headers look identical across the script.
 function _header
-    echo "$HEAD_RULE $HEAD_OPEN$argv$HEAD_CLOSE $HEAD_RULE"
+    echo "$HEAD_RULE "(_hdr)"$argv"(_rs)" $HEAD_RULE"
+end
+
+# Print a subheader nested under a section: 2sp indent, dim ─── rules,
+# cyan title. Used by _show (per-file blocks during drift) so each item
+# clearly sits inside its parent section.
+function _subheader
+    echo "  $SUB_RULE "(_sub)"$argv"(_rs)" $SUB_RULE"
+end
+
+# Colorize bracketed key letters in a prompt template. Replaces every `[x]`
+# (where x is one or more chars) with a bright-yellow-bold version, leaving
+# surrounding text default-colored. Use as: read -P (_keys "  [t]rack / …")
+function _keys --argument-names text
+    set -l o (_key)
+    set -l z (_rs)
+    # Single-quote the [$1] middle so fish doesn't try to index $o or expand $1.
+    set -l repl $o'[$1]'$z
+    string replace -ra '\[([^]]+)\]' $repl -- $text
 end
 
 # Format a count for inline display: bold for non-zero (signal), dim for
@@ -364,7 +396,10 @@ end
 function _spinner_start --argument-names label
     test -t 2; or return
     set -gx _SPINNER_LABEL $label
-    fish -c '
+    # --no-config: this subshell only needs printf + sleep. Sourcing config.fish
+    # would re-run fnm/plugin init in a backgrounded subprocess where fnm's
+    # shell-detection fails ("Can't infer shell!") and leaks to stderr.
+    fish --no-config -c '
         set chars ⣾ ⣽ ⣻ ⢿ ⡿ ⣟ ⣯ ⣷
         set i 1
         while true
@@ -436,8 +471,8 @@ function _report_external_changes --inherit-variable repo
         end
     end
     test (count $dirty) -eq 0; and return
-    echo "  $GLYPH_DIM $description"
-    git -C $repo diff --stat -- $dirty 2>/dev/null | sed 's/^/    /'
+    echo "  $GLYPH_LEAD $description"
+    git -C $repo diff --stat --color=always -- $dirty 2>/dev/null | sed 's/^/    /'
     _log_change "$description"
 end
 
@@ -481,11 +516,14 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     # unambiguous ("something is happening"). Stopping the spinner on first-
     # byte requires piping through fish in a way that loses exit status.
     # --permission-mode acceptEdits: auto-approve Edit/Write on the .md files
-    # claude is asked to maintain. Bash + WebFetch etc. still require interactive
-    # approval, but in -p mode there's no TTY for that prompt, so those fail
-    # closed (claude can't shell-out or fetch from this context — intended).
+    # claude is asked to maintain.
+    # --allowedTools: explicit whitelist so claude doesn't waste a turn (and
+    # noisy output) trying Bash/WebFetch/etc. only to hit the no-TTY wall.
+    # Doc review needs to read files, grep for references, and edit/create
+    # markdown — nothing else.
     _spinner_start "claude thinking… (model=$model effort=$effort)"
     claude -p --output-format text --permission-mode acceptEdits \
+        --allowedTools "Read,Edit,Write,Grep,Glob" \
         --model $model --effort $effort --session-id $session_id "$argv[1]"
     set -l rv $status
     _spinner_stop
@@ -746,7 +784,7 @@ function _wrangle_do_push --inherit-variable repo --argument-names mode
     # Prompt mode (sync's Pass 12). Loop on [d]iff, return on y/n.
     while true
         echo ""
-        read -P (_prompt)"  Push to $remote? [y]es / [N]o / [d]iff (full) > "(_rs) push_choice
+        read -P (_keys "  Push to $remote? [y]es / [N]o / [d]iff (full) > ") push_choice
         switch $push_choice
             case d D diff
                 if test $upstream_exists = yes
@@ -849,7 +887,9 @@ The repo has two doc tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free.
   - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live on the machine-branch (default: `personal`). A common convention is a top-level PERSONAL.md.
 
-You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/.
+You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/).
+
+Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail.
 
 Be conservative — only act on user-facing consequences.
 
@@ -1018,7 +1058,7 @@ if test "$_dry_run" = no; and not test -f $config_file
     echo ""
     set -l answer no
     while true
-        read -P (_prompt)"  Enable claude doc review by default on this machine? [y/N] > "(_rs) choice
+        read -P (_keys "  Enable claude doc review by default on this machine? [y/N] > ") choice
         switch $choice
             case y Y yes
                 set answer yes
@@ -1077,7 +1117,7 @@ if test (count $yoink_candidates) -gt 0
         echo ""
         echo "    "(_name "home/$rel")
         while true
-            read -P (_prompt)"    [y]oink (remove from repo) / [r]estore (stow back) / [s]kip / [q]uit > "(_rs) choice
+            read -P (_keys "    [y]oink (remove from repo) / [r]estore (stow back) / [s]kip / [q]uit > ") choice
             switch $choice
                 case y Y yoink
                     rm $home_subdir/$rel
@@ -1133,7 +1173,7 @@ if test (count $orphan_symlinks) -gt 0
         echo ""
         echo "    "(_name $path)" $GLYPH_ARROW "(_name (readlink $path))
         while true
-            read -P (_prompt)"    [r]emove dangling symlink / [s]kip / [q]uit > "(_rs) choice
+            read -P (_keys "    [r]emove dangling symlink / [s]kip / [q]uit > ") choice
             switch $choice
                 case r R remove
                     rm $path
@@ -1191,21 +1231,23 @@ function _show
     set -l rel $argv[1]
     set -l full $HOME/$rel
     echo ""
-    _header "~/$rel"
+    # Subheader (2sp indent, light rules) — visually nests this block under
+    # its parent section header. Body content sits one more level in (4sp).
+    _subheader "~/$rel"
     if test -d $full
         set -l n (find $full -type f 2>/dev/null | count)
         set -l sz (du -sh $full 2>/dev/null | awk '{print $1}')
-        echo "  directory $GLYPH_DIM $n file(s) · $sz"
-        echo "  tree (depth 2):"
-        find $full -maxdepth 2 2>/dev/null | head -15 | sed "s|$HOME/|    ~/|"
+        echo "    directory $GLYPH_DIM $n file(s) · $sz"
+        echo "    tree (depth 2):"
+        find $full -maxdepth 2 2>/dev/null | head -15 | sed "s|$HOME/|      ~/|"
     else if test -f $full
         set -l sz (du -h $full 2>/dev/null | awk '{print $1}')
         set -l mt (stat -f '%Sm' $full)
-        echo "  file $GLYPH_DIM $sz · $mt"
-        echo "  preview:"
-        head -8 $full 2>/dev/null | sed 's/^/    /'
+        echo "    file $GLYPH_DIM $sz · $mt"
+        echo "    preview:"
+        head -8 $full 2>/dev/null | sed 's/^/      /'
     else
-        echo "  (special / unreadable)"
+        echo "    (special / unreadable)"
     end
     echo ""
 end
@@ -1217,7 +1259,7 @@ function _track --inherit-variable home_subdir --inherit-variable repo
     mkdir -p (dirname $dest)
     mv $src $dest
     or begin
-        echo "  $GLYPH_ERR mv failed; aborting track"
+        echo "      $GLYPH_ERR mv failed; aborting track"
         return 1
     end
     pushd $repo >/dev/null
@@ -1225,15 +1267,15 @@ function _track --inherit-variable home_subdir --inherit-variable repo
     set -l rv $status
     popd >/dev/null
     if test $rv -eq 0
-        echo "  $GLYPH_OK moved to home/$rel + symlinked back to ~/$rel"
+        echo "      $GLYPH_OK moved to home/$rel + symlinked back to ~/$rel"
     else
-        echo "  $GLYPH_WARN moved but stow failed; resolve before committing"
+        echo "      $GLYPH_WARN moved but stow failed; resolve before committing"
     end
 end
 
 function _add_ignore --inherit-variable ignore_file
     echo $argv[1] >> $ignore_file
-    echo "  $GLYPH_OK added to .dotignore"
+    echo "      $GLYPH_OK added to .dotignore"
 end
 
 # ─── Pass 5: dotfile drift ───────────────────────────────────────────────
@@ -1272,8 +1314,9 @@ for rel in $candidates
     if test "$_dry_run" = yes
         continue
     end
+    # Prompt + responses sit at 4sp to nest visually under the _show subheader.
     while true
-        read -P (_prompt)"  [t]rack / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+        read -P (_keys "    [t]rack / [i]gnore forever / [s]kip / [q]uit > ") choice
         switch $choice
             case t T track
                 if _track $rel
@@ -1287,12 +1330,12 @@ for rel in $candidates
                 _log_change "ignored dotfile: $rel"
                 break
             case s S skip ''
-                echo "  $GLYPH_DIM skipped (will ask again next run)"
+                echo "      $GLYPH_DIM skipped (will ask again next run)"
                 break
             case q Q quit
                 _wrangle_abort quit
             case '*'
-                echo "  ? '$choice' — answer t/i/s/q"
+                echo "      ? '$choice' — answer t/i/s/q"
         end
     end
 end
@@ -1312,11 +1355,11 @@ end
 set -l home_dirty (git -C $repo diff --name-only -- home/ 2>/dev/null | string match -v 'home/.config/fish/fish_plugins')
 if test (count $home_dirty) -gt 0
     echo ""
-    echo "  $GLYPH_DIM tracked file(s) under home/ with uncommitted changes:"
+    echo "  $GLYPH_LEAD tracked file(s) under home/ with uncommitted changes:"
     for f in $home_dirty
-        echo "    $f"
+        echo "    "(_name $f)
     end
-    git -C $repo diff --stat -- $home_dirty 2>/dev/null | sed 's/^/    /'
+    git -C $repo diff --stat --color=always -- $home_dirty 2>/dev/null | sed 's/^/    /'
     _log_change (count $home_dirty)" tracked dotfile(s) hand-edited under home/"
 end
 
@@ -1361,7 +1404,7 @@ else
                 continue
             end
             while true
-                read -P (_prompt)"    [t]rack (add to fish_plugins) / [i]ignore (uninstall) / [s]kip / [q]uit > "(_rs) choice
+                read -P (_keys "    [t]rack (add to fish_plugins) / [i]ignore (uninstall) / [s]kip / [q]uit > ") choice
                 switch $choice
                     case t T track
                         echo $plugin >> $plugins_file_path
@@ -1398,7 +1441,7 @@ else
                 continue
             end
             while true
-                read -P (_prompt)"    [i]nstall / [r]emove from fish_plugins / [s]kip / [q]uit > "(_rs) choice
+                read -P (_keys "    [i]nstall / [r]emove from fish_plugins / [s]kip / [q]uit > ") choice
                 switch $choice
                     case i I install
                         _with_spinner "fisher install $plugin…" fish -c "fisher install $plugin"
@@ -1589,7 +1632,7 @@ else
                 echo "      "(_name $m)
             end
             while true
-                read -P (_prompt)"    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+                read -P (_keys "    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > ") choice
                 switch $choice
                     case t T track
                         echo "$prefix*" >> $univ_export_file
@@ -1623,7 +1666,7 @@ else
             echo ""
             echo "    standalone (no prefix): "(_name $name)" = "(string join " " $$name)
             while true
-                read -P (_prompt)"    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+                read -P (_keys "    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > ") choice
                 switch $choice
                     case t T track
                         echo $name >> $univ_export_file
@@ -1726,7 +1769,7 @@ else
                 continue
             end
             while true
-                read -P (_prompt)"    [t]rack / [i]gnore forever / [s]kip / [q]uit > "(_rs) choice
+                read -P (_keys "    [t]rack / [i]gnore forever / [s]kip / [q]uit > ") choice
                 switch $choice
                     case t T track
                         # Look up the description comment from tmp_dump (the
@@ -1782,7 +1825,7 @@ else
                 continue
             end
             while true
-                read -P (_prompt)"    [i]nstall / [r]emove from Brewfile / [s]kip / [q]uit > "(_rs) choice
+                read -P (_keys "    [i]nstall / [r]emove from Brewfile / [s]kip / [q]uit > ") choice
                 switch $choice
                     case i I install
                         set -l type (string split ' ' -- $entry)[1]
@@ -1931,7 +1974,9 @@ The repo has two documentation tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
   - PERSONAL docs describe the user's specific layer on top: post-bootstrap manual steps, tool-specific auth flows, machine-specific setup notes. These live on the machine-branch (default: `personal`). Create or update them when the machine-branch (Brewfile, tracked dotfiles, fish_plugins) adds something with known post-install or first-time-setup needs that aren't documented elsewhere. A common convention is a top-level PERSONAL.md, but you can split into multiple docs if it makes sense.
 
-You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, or any file under home/. Those are managed by other parts of the system.
+You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/). Those are managed by other parts of the system.
+
+Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail. Don't waste turns on tools that aren't whitelisted.
 
 Be conservative: only act on changes that have real user-facing setup or behavior consequences. Skip cosmetic or trivial diffs.
 
