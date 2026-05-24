@@ -23,9 +23,9 @@ Everything below is idempotent. Safe to re-run on a partially-set-up machine; no
    - Branch name for this machine (default: `personal`).
    - If creating a new branch: its parent (default: `main`).
    Writes `wrangle.machine-branch` and `branch.<name>.wrangle-parent` to `.git/config` (per-clone, not pushed). Already-on-a-configured-machine-branch is a no-op; existing-local-branch gets switched to; existing-on-origin gets checked out tracking origin; otherwise a fresh branch is created from the chosen parent.
-5. **Stow framework** — runs `stow --no-folding -t ~ home`. Creates symlinks for the framework's conf.d hooks (wrangle integration + blank-line-before-output), and any other tracked files under `home/`.
+5. **Stow framework** — runs `stow --no-folding -t ~ home`. Creates a symlink for the framework's `wrangle_integration.fish` conf.d hook, plus any other tracked files under `home/`.
 6. **Fisher** — bootstraps the fish plugin manager if not already present.
-7. **First wrangle** — execs into a fresh fish session and runs `wrangle`.
+7. **First wrangle** — execs into a fresh fish session and runs `wrangle sync` (so PATH integration from the just-stowed conf.d hook is live).
 
 ---
 
@@ -65,34 +65,19 @@ When bootstrap hands off, you're in interactive `wrangle`. What you'll see:
 
 Everything is non-destructive. Hitting `[s]kip` for everything is a valid outcome — wrangle just makes no changes and exits.
 
-For the full pass-by-pass reference, see **[README.md → User guide](README.md#user-guide)**.
+For the per-domain detail on what each pass does, see **[README.md → How tracking works](README.md#how-tracking-works)**.
 
 ---
 
 ## Daily use
 
-```fish
-wrangle                                # = wrangle sync (default)
-wrangle sync                           # interactive sync — all 12 passes
-wrangle sync --dry-run                 # see drift, no prompts, no changes, no commit
-wrangle sync --force                   # re-ask about paths in .dotignore
-wrangle sync --with-claude             # force-on claude doc review this run
-wrangle sync --suppress-claude         # force-off claude this run
-wrangle sync --no-branch-switch        # stay on current branch (skip the chain-pull)
+Three subcommands cover the everyday loop:
 
-wrangle pull                           # just walk the parent chain (fetch + cascade-merge), exit
-wrangle pull --resume                  # continue a cascade interrupted by a merge conflict
+- `wrangle sync` — the main one: detect drift across all domains, prompt per-item, commit, optionally push.
+- `wrangle pull` — fetch origin and cascade-merge along the parent chain. Framework updates and commits from upstream machine-branches arrive here.
+- `wrangle push` — push your current branch's commits.
 
-wrangle push                           # push current branch (preview, no prompt), exit
-
-wrangle review-docs                    # invoke claude on current state (no drift required)
-wrangle import-univ-vars               # restore captured plugin universals on a new machine
-wrangle set-parent <branch>            # declare current branch's wrangle-parent
-wrangle reset-claude-session           # drop cached claude session id
-
-wrangle help                           # subcommand list + env vars + config keys
-wrangle help <subcommand>              # detailed help for one subcommand
-```
+`wrangle help` lists the rest (env vars, git config keys, the less-frequent subcommands like `import-univ-vars`, `set-parent`, `review-docs`, `reset-claude-session`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
 
 The repo nags you in three ways from new shells. All are colorized and prefixed with `wrangle:` so it's obvious where they come from, and each suggests a concrete subcommand to fix the situation:
 
@@ -120,7 +105,7 @@ The repo itself is untouched. Re-stow any time with `stow --no-folding -t ~ home
 - `~/.cache/dotfiles/last-wrangle` — last successful run timestamp (machine-local).
 - `~/.cache/dotfiles/wrangle-config` — claude opt-in answer (machine-local).
 - `~/.cache/dotfiles/claude-session-id` — cached claude session for resumption.
-- `~/.cache/dotfiles/pull-cascade-state` — set when a cascade hits a conflict; consumed by `--resume-pull`.
+- `~/.cache/dotfiles/pull-cascade-state` — set when a `wrangle pull` hits a conflict; consumed by `wrangle pull --resume`.
 - `~/.cache/dotfiles/pull-nag-state` — per-parent SHA last nagged about (so the pull nag doesn't re-fire for the same commits).
 - `<repo>/.wrangle-changelog` — running log of structural changes (used by claude when enabled).
 - `<repo>/.dotignore`, `<repo>/.brewignore`, `<repo>/.univexport`, `<repo>/.univignore` — ignore/allowlists, tracked on your machine-branch.
