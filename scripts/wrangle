@@ -441,6 +441,30 @@ function _with_spinner --argument-names label
     return $rv
 end
 
+# Same as _with_spinner but captures BOTH stdout and stderr. Use when the
+# wrapped command streams progress to stderr (e.g. `git push`, which writes
+# "Counting objects: …" / "Compressing: …" to stderr); without capturing
+# stderr, that stream fights the spinner for the same terminal line and
+# strands ghost spinner frames between the streamed lines.
+#
+# Trade-off: if the command needs to prompt (HTTPS credentials, ssh passphrase),
+# the prompt is captured and invisible — caller must guarantee non-interactive.
+#
+# Usage:  _with_spinner_quiet "doing thing…" the_command arg1 arg2
+function _with_spinner_quiet --argument-names label
+    set -l cmd $argv[2..-1]
+    _spinner_start "$label"
+    set -l out (mktemp)
+    $cmd > $out 2>&1
+    set -l rv $status
+    _spinner_stop
+    if test -s $out
+        cat $out
+    end
+    rm -f $out
+    return $rv
+end
+
 # `wrangle reset-claude-session` — drop the cached session id, exit.
 if test "$_subcmd" = reset-claude-session
     rm -f $claude_session_file
@@ -768,10 +792,8 @@ function _wrangle_do_push --inherit-variable repo --argument-names mode
     if test "$mode" = immediate
         # Push without prompting — user typed the subcommand, that IS the decision.
         echo ""
-        _spinner_start "Pushing to $remote…"
-        git push 2>&1
+        _with_spinner_quiet "Pushing to $remote…" git push
         set -l push_rv $status
-        _spinner_stop
         if test $push_rv -eq 0
             echo "  $GLYPH_OK pushed"
         else
@@ -794,10 +816,8 @@ function _wrangle_do_push --inherit-variable repo --argument-names mode
                 end
                 # loop back to re-prompt
             case y Y yes
-                _spinner_start "Pushing to $remote…"
-                git push 2>&1
+                _with_spinner_quiet "Pushing to $remote…" git push
                 set -l push_rv $status
-                _spinner_stop
                 if test $push_rv -eq 0
                     echo "  $GLYPH_OK pushed"
                 else
@@ -997,13 +1017,20 @@ end
 # Auto-switch to the machine-branch (default: personal), then cascade-merge
 # along the parent chain. See _wrangle_pull_chain for the full semantics.
 # Skip with --no-branch-switch / WRANGLE_NO_BRANCH_SWITCH=1.
+# In --dry-run mode the switch is reported but not performed — dry-run
+# must have no side effects, including no checkout. (Previously dry-run
+# DID switch branches, which surprised callers and broke test hermeticity
+# when scripts/run-tests invoked `wrangle sync --dry-run` against the
+# real working tree.)
 if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
     pushd $repo >/dev/null
 
     set -l machine_branch (_wrangle_machine_branch)
     set -l current_branch (git rev-parse --abbrev-ref HEAD)
     if test "$current_branch" != "$machine_branch"
-        if git show-ref --verify --quiet refs/heads/$machine_branch
+        if test "$_dry_run" = yes
+            echo "  $GLYPH_ARROW would switch to "(_name $machine_branch)" (currently on "(_name $current_branch)")"
+        else if git show-ref --verify --quiet refs/heads/$machine_branch
             _with_spinner "Switching to $machine_branch…" git checkout $machine_branch 2>&1
             echo "  $GLYPH_ARROW switched to "(_name $machine_branch)" (was on "(_name $current_branch)")"
         else
