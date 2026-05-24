@@ -1017,13 +1017,20 @@ end
 # Auto-switch to the machine-branch (default: personal), then cascade-merge
 # along the parent chain. See _wrangle_pull_chain for the full semantics.
 # Skip with --no-branch-switch / WRANGLE_NO_BRANCH_SWITCH=1.
+# In --dry-run mode the switch is reported but not performed — dry-run
+# must have no side effects, including no checkout. (Previously dry-run
+# DID switch branches, which surprised callers and broke test hermeticity
+# when scripts/run-tests invoked `wrangle sync --dry-run` against the
+# real working tree.)
 if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
     pushd $repo >/dev/null
 
     set -l machine_branch (_wrangle_machine_branch)
     set -l current_branch (git rev-parse --abbrev-ref HEAD)
     if test "$current_branch" != "$machine_branch"
-        if git show-ref --verify --quiet refs/heads/$machine_branch
+        if test "$_dry_run" = yes
+            echo "  $GLYPH_ARROW would switch to "(_name $machine_branch)" (currently on "(_name $current_branch)")"
+        else if git show-ref --verify --quiet refs/heads/$machine_branch
             _with_spinner "Switching to $machine_branch…" git checkout $machine_branch 2>&1
             echo "  $GLYPH_ARROW switched to "(_name $machine_branch)" (was on "(_name $current_branch)")"
         else
