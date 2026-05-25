@@ -29,7 +29,7 @@ set -l dash_dash_help_help ($wrangle --help)
 test "$dash_dash_help_help" = "$top_help"
 @test "wrangle --help prints same output as `wrangle help`" $status -eq 0
 
-for subcmd in sync pull review-docs import-univ-vars set-parent reset-claude-session
+for subcmd in sync pull review-docs set-parent reset-claude-session
     string match -q "*$subcmd*" -- "$top_help"
     @test "top-level help lists subcommand: $subcmd" $status -eq 0
 end

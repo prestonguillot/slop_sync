@@ -33,15 +33,9 @@ Everything below is idempotent. Safe to re-run on a partially-set-up machine; no
 
 1. **Git remote auth (if you'll push).** Set up auth however you prefer: osxkeychain credential helper (built into git on macOS), SSH keys, the `gh` CLI, etc. Plain `git push` over HTTPS works out of the box once your credential helper is configured. On the first push of your machine-branch, git will prompt with `git push --set-upstream origin <branch>` — accept it (or use a different remote if you'd rather push that branch elsewhere).
 
-2. **Restore captured universal variables (if your machine-branch has them).** If your machine-branch was previously set up on another machine and `home/.config/fish/exported-univ-vars.fish` is present in the repo, run:
-   ```fish
-   wrangle import-univ-vars
-   ```
-   This restores tide / sponge / other plugin configuration that lives in fish universals rather than files. Skip if this is a fresh machine-branch.
+2. **Mac App Store sign-in (if you'll install MAS apps).** Open the App Store app and sign in. `mas install <id>` won't work otherwise.
 
-3. **Mac App Store sign-in (if you'll install MAS apps).** Open the App Store app and sign in. `mas install <id>` won't work otherwise.
-
-4. **Anything else you want this machine to have.** Install tools normally (`brew install foo`, drag apps to `/Applications`, write dotfiles by hand, whatever). Next time you run `wrangle`, it'll detect drift and walk you through tracking it.
+3. **Anything else you want this machine to have.** Install tools normally (`brew install foo`, drag apps to `/Applications`, write dotfiles by hand, whatever). Next time you run `wrangle`, it'll detect drift and walk you through tracking it.
 
 ---
 
@@ -56,7 +50,7 @@ When bootstrap hands off, you're in interactive `wrangle`. What you'll see:
 - A re-stow.
 - A dotfile-drift pass: walks top-level entries in `~/` and `~/.config/` that aren't tracked. For each: `[t]rack` (moves into `home/`, symlinks back), `[i]gnore forever` (writes to `.dotignore`), `[s]kip`, `[q]uit`.
 - A fisher-plugin drift pass: installed plugins not in `fish_plugins`, and vice versa.
-- A univ-var drift pass: groups installed fish universals by prefix. `[t]rack pattern` adds e.g. `tide_*` to `.univexport` and regenerates `home/.config/fish/exported-univ-vars.fish`; `[i]gnore forever` adds the pattern to `.univignore`.
+- A univ-var drift pass with two sub-passes. **Import**: if `exported-univ-vars.fish` exists, applies any tracked vars missing from your live shell silently; prompts `[a]pply / [k]eep local / [s]kip / [q]uit` per var when live and repo values differ. **Capture**: groups remaining (untracked) live universals by prefix; `[t]rack pattern` adds e.g. `tide_*` to `.univexport` and regenerates `exported-univ-vars.fish`; `[i]gnore forever` adds the pattern to `.univignore`.
 - A brew-drift pass: installed brews/casks/MAS apps not in `Brewfile`, and vice versa.
 - A secret-scan against the staged diff before commit (auto-aborts on AWS/GitHub/Slack/Stripe/OpenAI/Anthropic/Google tokens, JWTs, private keys).
 - A commit (auto, on your machine-branch).
@@ -77,7 +71,7 @@ Three subcommands cover the everyday loop:
 - `wrangle pull` — fetch origin and cascade-merge along the parent chain. Framework updates and commits from upstream machine-branches arrive here.
 - `wrangle push` — push your current branch's commits.
 
-`wrangle help` lists the rest (env vars, git config keys, the less-frequent subcommands like `import-univ-vars`, `set-parent`, `review-docs`, `reset-claude-session`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
+`wrangle help` lists the rest (env vars, git config keys, the less-frequent subcommands like `set-parent`, `review-docs`, `reset-claude-session`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
 
 The repo nags you in three ways from new shells. All are colorized and prefixed with `wrangle:` so it's obvious where they come from, and each suggests a concrete subcommand to fix the situation:
 
@@ -109,7 +103,7 @@ The repo itself is untouched. Re-stow any time with `stow --no-folding -t ~ home
 - `~/.cache/dotfiles/pull-nag-state` — per-parent SHA last nagged about (so the pull nag doesn't re-fire for the same commits).
 - `<repo>/.wrangle-changelog` — running log of structural changes (used by claude when enabled).
 - `<repo>/.dotignore`, `<repo>/.brewignore`, `<repo>/.univexport`, `<repo>/.univignore` — ignore/allowlists, tracked on your machine-branch.
-- `<repo>/home/.config/fish/exported-univ-vars.fish` — auto-regenerated snapshot of universals matching `.univexport` patterns. Restore on a new machine with `wrangle import-univ-vars`.
+- `<repo>/home/.config/fish/exported-univ-vars.fish` — auto-regenerated snapshot of universals matching `.univexport` patterns. Restored automatically by the next `wrangle sync` (Pass 7's import sub-pass): missing tracked vars are silent-applied; value conflicts prompt per-var.
 
 ---
 
