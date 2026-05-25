@@ -83,3 +83,40 @@ set out (printf '%s\n' 'first line clean' 'AKIAIOSFODNN7EXAMPLE' 'third line cle
 
 echo "akiaiosfodnn7example" | $scan >/dev/null
 @test "case-sensitive — lowercase 'akia' should NOT match" $status -eq 0
+
+# ─── Negative cases: boundary + near-miss patterns ───────────────────────
+# Cover length boundaries, wrong-shape prefixes, and substring contexts that
+# look token-ish without actually matching the patterns.
+
+echo "AKIAIOSFODNN7EXAMPL" | $scan >/dev/null
+@test "AWS pattern: 15 chars after AKIA (one short) → no match" $status -eq 0
+
+echo "BKIAIOSFODNN7EXAMPLE" | $scan >/dev/null
+@test "AWS pattern: wrong prefix (BKIA instead of AKIA) → no match" $status -eq 0
+
+echo "AKIA" | $scan >/dev/null
+@test "AWS pattern: prefix alone with no suffix → no match" $status -eq 0
+
+echo "gh_abcdefghijklmnopqrstuvwxyz0123456789ab" | $scan >/dev/null
+@test "GitHub pattern: missing letter slot (gh_ vs gh[poursi]_) → no match" $status -eq 0
+
+echo "ghp_tooshort1234567890abc" | $scan >/dev/null
+@test "GitHub pattern: ghp_ + 21 chars (need 36+) → no match" $status -eq 0
+
+echo "xoxz-abcdefghij" | $scan >/dev/null
+@test "Slack pattern: wrong letter slot (xoxz- vs xox[abprs]-) → no match" $status -eq 0
+
+echo "sk-tooshortbutsame" | $scan >/dev/null
+@test "OpenAI pattern: sk- + 15 chars (need 20+) → no match" $status -eq 0
+
+echo "sk-ant-tooshort" | $scan >/dev/null
+@test "Anthropic pattern: sk-ant- + 8 chars (need 20+) → no match" $status -eq 0
+
+echo "----BEGIN RSA PRIVATE KEY----" | $scan >/dev/null
+@test "PEM pattern: 4 dashes instead of 5 → no match" $status -eq 0
+
+echo "eyJsegment1.eyJsegment2.x" | $scan >/dev/null
+@test "JWT pattern: third segment 1 char (need 8+) → no match" $status -eq 0
+
+echo "header.eyJsegment2okay.signatureokay" | $scan >/dev/null
+@test "JWT pattern: first segment missing eyJ prefix → no match" $status -eq 0

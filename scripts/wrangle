@@ -67,7 +67,38 @@
 #   branch.<name>.wrangle-parent <parent>   what to merge from at the start of each run
 #                                           (default: main; empty = root branch with no parent)
 
-# ── Subcommand dispatch ────────────────────────────────────────────────
+# ── FILE STRUCTURE ───────────────────────────────────────────────────────
+# Sections in reading order. To jump to any entry, search the file for its
+# label text — every entry corresponds to a `# ─── <label> ───` divider.
+#
+#   1. Preamble + subcommand dispatch
+#   2. Help printers
+#   3. Helper library sourcing
+#   4. Color + spinner library
+#   5. Early-exit subcommand handlers
+#      5.1 reset-claude-session
+#      5.2 set-parent
+#      5.3 pull
+#      5.4 push
+#      5.5 review-docs
+#   6. Commit-message builders
+#   7. Parent-chain helper library
+#   8. Sync pipeline
+#      8.1  Pass 1: parent-chain pull
+#      8.2  First-run welcome + claude opt-in
+#      8.3  Pass 2: yoink check
+#      8.4  Pass 3: orphan-symlink check
+#      8.5  Pass 4: re-stow
+#      8.6  Pass 5: dotfile drift
+#      8.7  Pass 6: fisher drift
+#      8.8  Pass 7: univ-var drift
+#      8.9  Pass 8: brew drift
+#      8.10 Pass 9: changelog
+#      8.11 Pass 10: commit
+#      8.12 Pass 11: claude doc review
+#      8.13 Pass 12: push
+
+# ─── Preamble + subcommand dispatch ──────────────────────────────────────
 # Shape: `wrangle <subcmd> [<args>...]`. Bare `wrangle`, `wrangle -h`, and
 # `wrangle --help` all print the top-level help (matching git's convention).
 # Subcommands must be given explicitly — there's no default-to-sync shorthand.
@@ -129,7 +160,7 @@ switch $_subcmd
         set -q _flag_resume;           and _wrangle_reject_flag $_subcmd --resume
 end
 
-# ── Help printers ─────────────────────────────────────────────────────
+# ─── Help printers ───────────────────────────────────────────────────────
 function _wrangle_help_top
     echo "Usage: wrangle <subcommand> [args]"
     echo ""
@@ -301,7 +332,17 @@ if not test -f $last_run_stamp
     set -g _first_run yes
 end
 
-# ─── Color + spinner helpers ──────────────────────────────────────────────
+# ─── Helper library sourcing ─────────────────────────────────────────────
+# Pure functions live in their own scripts/_*.fish files so the tests can
+# source them directly. Sourced here, before anything that uses them.
+source $repo/scripts/_skiplist.fish      # .dotignore / .fisherignore parser + skiplist match
+source $repo/scripts/_univ_parse.fish    # exported-univ-vars.fish parser
+source $repo/scripts/_univ_helpers.fish  # _univ_prefix for capture sub-pass grouping
+source $repo/scripts/_chain.fish         # machine-branch + parent-chain resolution
+source $repo/scripts/_cascade_state.fish # pull-cascade resume + pull-nag state I/O
+source $repo/scripts/_commit_msg.fish    # commit-message builder (plain path)
+
+# ─── Color + spinner library ─────────────────────────────────────────────
 # Three-color visual hierarchy:
 #   - Section headers (Pass titles, _header): bright magenta bold + heavy
 #     ━━━ rules. Loudest — owns the page, scans as "new orientation point."
@@ -458,7 +499,12 @@ function _with_spinner_quiet --argument-names label
     return $rv
 end
 
-# `wrangle reset-claude-session` — drop the cached session id, exit.
+# ─── Early-exit subcommand handlers ──────────────────────────────────────
+# Each subcommand below (reset-claude-session, set-parent, pull, push,
+# review-docs) handles its work and exits, never falling through to the
+# sync pipeline.
+
+# ─── reset-claude-session ────────────────────────────────────────────────
 if test "$_subcmd" = reset-claude-session
     rm -f $claude_session_file
     printf "%s✓%s Cleared cached claude session id. Next claude invocation starts fresh.\n" (_ok) (_rs)
@@ -547,77 +593,18 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     return $rv
 end
 
-# ── Parent-chain helpers ──────────────────────────────────────────────────
+# ─── Parent-chain helper library ─────────────────────────────────────────
 # Branch metadata lives in git config (per-clone, not pushed):
-#   branch.<name>.wrangle-parent <parent-branch-name>     # empty = root
-#   wrangle.machine-branch <branch-name>                   # this machine's branch
-
-function _wrangle_machine_branch --inherit-variable repo
-    set -l mb (git -C $repo config wrangle.machine-branch 2>/dev/null)
-    test -z "$mb"; and set mb personal
-    echo $mb
-end
-
-function _wrangle_parent_of --inherit-variable repo --argument-names branch
-    test -z "$branch"; and return 1
-    # `main` is hardcoded as root: it never has a parent, regardless of config.
-    test "$branch" = main; and return 1
-    set -l p (git -C $repo config "branch.$branch.wrangle-parent" 2>/dev/null)
-    if test -z "$p"
-        # Default unset → assume `main` is the parent of everything that
-        # isn't main itself. Backward-compat for setups that pre-date the
-        # parent-chain feature (just `main` + `personal`).
-        echo main
-    else
-        echo $p
-    end
-end
-
-# Walk the parent chain root-toward-leaf. Returns the chain as a list:
-# e.g. for `work` → [main, personal, work].
-function _wrangle_chain_for --inherit-variable repo --argument-names branch
-    set -l chain
-    set -l cur $branch
-    while test -n "$cur"
-        set chain $cur $chain
-        set cur (_wrangle_parent_of $cur)
-    end
-    for b in $chain
-        echo $b
-    end
-end
-
-# Cache-file helpers for the pull-cascade resume state.
-# Format: one line per remaining edge as "parent:child", e.g.
-#   main:personal
-#   personal:work
-# Plus a first line "ORIGINAL_BRANCH:<name>" so we know where to land back.
-function _wrangle_save_cascade_state --inherit-variable pull_cascade_state
-    set -l original $argv[1]
-    set -l remaining_edges $argv[2..-1]
-    echo "ORIGINAL_BRANCH:$original" > $pull_cascade_state
-    for edge in $remaining_edges
-        echo $edge >> $pull_cascade_state
-    end
-end
-
-function _wrangle_clear_cascade_state --inherit-variable pull_cascade_state
-    rm -f $pull_cascade_state
-end
-
-# Update the pull-nag cache so a successful merge stops re-nagging until new
-# upstream activity. Records the SHA of origin/<parent> we just merged from.
-function _wrangle_record_pull_nag --inherit-variable pull_nag_state --inherit-variable repo
-    set -l parent $argv[1]
-    set -l sha (git -C $repo rev-parse origin/$parent 2>/dev/null)
-    test -z "$sha"; and return
-    set -l tmp (mktemp)
-    if test -f $pull_nag_state
-        grep -v "^$parent:" $pull_nag_state > $tmp 2>/dev/null
-    end
-    echo "$parent:$sha" >> $tmp
-    mv $tmp $pull_nag_state
-end
+#   wrangle.machine-branch <name>                          # this machine's branch
+#   branch.<name>.wrangle-parent <parent>                  # empty = root
+#
+# The chain-resolution helpers (`_wrangle_machine_branch`, `_wrangle_parent_of`,
+# `_wrangle_chain_for`) live in scripts/_chain.fish (sourced at the top of
+# this script). Cascade-state I/O (`_wrangle_save_cascade_state`,
+# `_wrangle_clear_cascade_state`, `_wrangle_record_pull_nag`) lives in
+# scripts/_cascade_state.fish. The orchestration below (`_wrangle_pull_chain`,
+# `_wrangle_do_push`, etc.) stays inline since it composes those helpers with
+# heavy use of script-local state.
 
 # Run the cascade. Walks (parent, child) edges root-toward-leaf, skipping
 # edges where the child already has the parent's commits. On a merge conflict
@@ -654,8 +641,8 @@ function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cas
         set edges (tail -n +2 $pull_cascade_state)
     else
         set original (git rev-parse --abbrev-ref HEAD)
-        set -l machine_branch (_wrangle_machine_branch)
-        set -l chain (_wrangle_chain_for $machine_branch)
+        set -l machine_branch (_wrangle_machine_branch $repo)
+        set -l chain (_wrangle_chain_for $repo $machine_branch)
         # Build (parent, child) edges from the chain. For chain [main, personal, work]:
         # edges = [main:personal, personal:work]
         if test (count $chain) -lt 2
@@ -712,7 +699,7 @@ function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cas
             # (starting from this one, since it's now mid-merge).
             set -l remaining_idx (contains -i -- $edge $edges)
             set -l remaining $edges[$remaining_idx..-1]
-            _wrangle_save_cascade_state $original $remaining
+            _wrangle_save_cascade_state $pull_cascade_state $original $remaining
             echo ""
             echo "  $GLYPH_WARN merge conflict during cascade: "(_name $parent_ref)" → "(_name $child)
             echo "    Files needing resolution:"
@@ -726,7 +713,7 @@ function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cas
         end
 
         echo "  $GLYPH_OK merged "(_n $ahead)" commit(s) from "(_name $parent_ref)" into "(_name $child)
-        _wrangle_record_pull_nag $parent
+        _wrangle_record_pull_nag $pull_nag_state $repo $parent
         set merged_any yes
     end
 
@@ -735,7 +722,7 @@ function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cas
         _with_spinner "Switching back to $original…" git checkout $original 2>&1
     end
 
-    _wrangle_clear_cascade_state
+    _wrangle_clear_cascade_state $pull_cascade_state
     popd >/dev/null
     return 0
 end
@@ -828,6 +815,7 @@ function _wrangle_do_push --inherit-variable repo --argument-names mode
     end
 end
 
+# ─── set-parent ──────────────────────────────────────────────────────────
 # `wrangle set-parent <branch>` — write branch.<current>.wrangle-parent, exit.
 if test "$_subcmd" = set-parent
     if test (count $argv) -ne 1
@@ -846,6 +834,7 @@ if test "$_subcmd" = set-parent
     exit 0
 end
 
+# ─── pull ────────────────────────────────────────────────────────────────
 # `wrangle pull [--resume]` — cascade, exit.
 if test "$_subcmd" = pull
     _header "Parent-chain pull"
@@ -857,6 +846,7 @@ if test "$_subcmd" = pull
     exit $status
 end
 
+# ─── push ────────────────────────────────────────────────────────────────
 # `wrangle push` — push current branch to origin (preview, no prompt), exit.
 if test "$_subcmd" = push
     _header "Push"
@@ -864,6 +854,7 @@ if test "$_subcmd" = push
     exit $status
 end
 
+# ─── review-docs ─────────────────────────────────────────────────────────
 # `wrangle review-docs` — skip drift entirely, invoke claude on current state.
 # Useful when you opted into claude AFTER making changes (so the normal sync
 # doc-sync path skipped because $_changes was empty), or when you've hand-
@@ -911,51 +902,27 @@ end
 # opt-in question runs (so the just-saved answer is honored this run). Pass 10
 # (commit message) and Pass 11 (doc-sync) both read it.
 
-# Build a commit message. Three paths:
+# ─── Commit-message builders ─────────────────────────────────────────────
+# Three-path strategy:
 #   1. Single structural change → use it directly. claude can't improve much.
 #   2. claude opt-in is on (and CLI present) → ask claude to summarize the diff.
 #   3. Fall back to heuristic. For hand-edits (empty $_changes) describes the
 #      file count; for multi-change uses "$first (+N more)".
-function _build_commit_msg --inherit-variable _changes --inherit-variable repo
-    set -l n (count $_changes)
-
-    if test $n -eq 1
-        echo "wrangle: $_changes[1]"
-        return
-    end
-
-    if test "$_claude_opt" = on; and command -q claude
-        set -l msg (_build_commit_msg_via_claude)
-        if test $status -eq 0; and test -n "$msg"
-            echo $msg
-            return
-        end
-    end
-
-    # Heuristic fallback
-    if test $n -eq 0
-        set -l file_count (git -C $repo diff --cached --name-only 2>/dev/null | count)
-        if test $file_count -eq 1
-            set -l f (git -C $repo diff --cached --name-only | head -1)
-            echo "wrangle: edit $f"
-        else
-            echo "wrangle: sync $file_count file(s)"
-        end
-        return
-    end
-
-    echo "wrangle: $_changes[1] (+"(math $n - 1)" more)"
-end
-
-# Helper for the claude path of _build_commit_msg. Stateless — fresh session
-# every invocation (commit messages don't need conversation continuity, and we
-# don't want to pollute the doc-review session).
-function _build_commit_msg_via_claude --inherit-variable _changes --inherit-variable repo
+#
+# The plain builder `_build_commit_msg` lives in scripts/_commit_msg.fish
+# (sourced at the top of this script). `_build_commit_msg_via_claude` stays
+# here because it shells out to the claude CLI; the extracted plain builder
+# calls into it.
+#
+# Stateless — fresh session every invocation (commit messages don't need
+# conversation continuity, and we don't want to pollute the doc-review session).
+function _build_commit_msg_via_claude --argument-names repo
+    set -l changes $argv[2..-1]
     set -l diff (git -C $repo diff --cached 2>/dev/null | head -300)
     test -z "$diff"; and return 1
 
     set -l changes_str ""
-    for c in $_changes
+    for c in $changes
         set changes_str "$changes_str- $c"\n
     end
 
@@ -989,6 +956,11 @@ Rules:
     echo $msg
 end
 
+# ─── Sync pipeline ───────────────────────────────────────────────────────
+# The numbered passes below run in order for `wrangle sync`. Each pass owns
+# one drift domain (or one finalization step). Subcommand handlers above
+# exited before reaching this point.
+
 # ─── Pass 1: parent-chain pull ───────────────────────────────────────────
 # Auto-switch to the machine-branch (default: personal), then cascade-merge
 # along the parent chain. See _wrangle_pull_chain for the full semantics.
@@ -1001,7 +973,7 @@ end
 if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
     pushd $repo >/dev/null
 
-    set -l machine_branch (_wrangle_machine_branch)
+    set -l machine_branch (_wrangle_machine_branch $repo)
     set -l current_branch (git rev-parse --abbrev-ref HEAD)
     if test "$current_branch" != "$machine_branch"
         if test "$_dry_run" = yes
@@ -1010,7 +982,7 @@ if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
             _with_spinner "Switching to $machine_branch…" git checkout $machine_branch 2>&1
             echo "  $GLYPH_ARROW switched to "(_name $machine_branch)" (was on "(_name $current_branch)")"
         else
-            set -l parent (_wrangle_parent_of $machine_branch)
+            set -l parent (_wrangle_parent_of $repo $machine_branch)
             set -l from main
             test -n "$parent"; and set from $parent
             _with_spinner "Creating $machine_branch from $from…" git checkout -b $machine_branch $from 2>&1
@@ -1033,7 +1005,12 @@ if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
 end
 
 
-# ── First-run welcome ─────────────────────────────────────────────────────
+# ─── First-run welcome + claude opt-in ───────────────────────────────────
+# Two one-shot interactives that fire on the very first sync on a new
+# machine, before any drift detection. The welcome banner introduces
+# wrangle; the claude opt-in question gates the doc-sync pass (Pass 11)
+# and the claude-assisted commit message (Pass 10).
+
 if test "$_first_run" = yes; and test "$_dry_run" = no
     echo ""
     _header "First wrangle on this machine"
@@ -1043,7 +1020,7 @@ if test "$_first_run" = yes; and test "$_dry_run" = no
     echo ""
 end
 
-# ── Claude opt-in question ───────────────────────────────────────────────
+# Claude opt-in question.
 # Fires the first time wrangle is run *after the opt-in feature exists* —
 # i.e., whenever $config_file is missing. Decoupled from $_first_run (which
 # only catches truly-fresh machines) so existing users get asked the first
@@ -1211,16 +1188,9 @@ else
     echo "$GLYPH_WARN  stow not installed; skipping re-stow."
 end
 
-# ─── Skiplist (sole source: .dotignore) ──────────────────────────────────
-# Logic lives in scripts/_skiplist.fish (shared with test/skiplist.fish and
-# test/fisherignore.fish). `--force` bypasses .dotignore entirely (the
-# pre-commit secret-scan is the secondary safety net).
-source $repo/scripts/_skiplist.fish
-
-# Parser for exported-univ-vars.fish, used by Pass 7's import sub-pass to
-# read names + values without `source`ing the file (which would mutate
-# live state pre-decision). Shared with test/univ-import-parse.fish.
-source $repo/scripts/_univ_parse.fish
+# Skiplist + univ-var parsers are sourced from scripts/_*.fish at the top.
+# `--force` bypasses .dotignore entirely (the pre-commit secret-scan is the
+# secondary safety net).
 
 set -l user_ignores
 if test "$_force" = no
@@ -1538,16 +1508,8 @@ set -l univ_ignore_file $repo/.univignore
 set -l univ_output_file $repo/home/.config/fish/exported-univ-vars.fish
 set -l univ_changed no
 
-# Helper: extract the prefix of a univ var name (or empty if no underscore).
-function _univ_prefix --argument-names name
-    if string match -qr '^__[a-zA-Z0-9]+_' -- $name
-        string match -r '^__[a-zA-Z0-9]+_' -- $name
-    else if string match -qr '^_[a-zA-Z0-9]+_' -- $name
-        string match -r '^_[a-zA-Z0-9]+_' -- $name
-    else if string match -qr '^[a-zA-Z0-9]+_' -- $name
-        string match -r '^[a-zA-Z0-9]+_' -- $name
-    end
-end
+# `_univ_prefix` lives in scripts/_univ_helpers.fish (sourced at the top of
+# this script). Sister to scripts/_univ_parse.fish (the export-file parser).
 
 # Helper: regenerate $univ_output_file from current state + .univexport patterns.
 function _univ_regenerate --inherit-variable univ_export_file --inherit-variable univ_output_file
@@ -2087,7 +2049,7 @@ if test "$_dry_run" = no; and test -z "$WRANGLE_NO_COMMIT"
             end
         end
 
-        set -l commit_msg (_build_commit_msg)
+        set -l commit_msg (_build_commit_msg $repo $_claude_opt $_changes)
         _with_spinner "Committing…" git commit -m "$commit_msg"
         set -g _committed yes
         echo "  $GLYPH_OK committed: $commit_msg"
