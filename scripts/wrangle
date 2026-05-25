@@ -29,7 +29,8 @@
 #
 # Prompts use consistent letters:
 #   [t]rack          — capture into the repo
-#   [i]gnore forever — append to .dotignore or .brewignore (track) / install (brew/plugin)
+#   [i]gnore         — append to the per-pass skiplist (.dotignore / .brewignore /
+#                      .fisherignore / .univignore); leaves local state alone
 #   [r]emove         — yoink/drop from the repo
 #   [s]kip           — leave alone; ask again next run
 #   [q]uit
@@ -907,7 +908,7 @@ The repo has two doc tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free.
   - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live on the machine-branch (default: `personal`). A common convention is a top-level PERSONAL.md.
 
-You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/).
+You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .fisherignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/).
 
 Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail.
 
@@ -1404,13 +1405,27 @@ else
         set plugins_in_file (cat $plugins_file_path | grep -v '^#' | grep -v '^$')
     end
 
+    # `.fisherignore`: exact plugin identifiers the user has told us never to
+    # nag about. Parsed by the shared loader (comment + blank-line stripping
+    # is what we need; matching is exact via `contains --`, not glob). `--force`
+    # bypasses, same as `.dotignore`.
+    set -l fisher_ignore_file $repo/.fisherignore
+    set -l fisher_ignores
+    if test "$_force" = no
+        set fisher_ignores (_wrangle_load_dotignore $fisher_ignore_file)
+    end
+
     set -l plugin_added
     for p in $fisher_listed
-        contains -- $p $plugins_in_file; or set -a plugin_added $p
+        contains -- $p $plugins_in_file; and continue
+        contains -- $p $fisher_ignores; and continue
+        set -a plugin_added $p
     end
     set -l plugin_missing
     for p in $plugins_in_file
-        contains -- $p $fisher_listed; or set -a plugin_missing $p
+        contains -- $p $fisher_listed; and continue
+        contains -- $p $fisher_ignores; and continue
+        set -a plugin_missing $p
     end
 
     if test (count $plugin_added) -eq 0; and test (count $plugin_missing) -eq 0
@@ -1418,7 +1433,7 @@ else
     end
 
     set -l fish_tracked 0
-    set -l fish_uninstalled 0
+    set -l fish_ignored 0
     set -l fish_installed 0
     set -l fish_removed 0
 
@@ -1431,7 +1446,7 @@ else
                 continue
             end
             while true
-                read -P (_keys "    [t]rack (add to fish_plugins) / [i]ignore (uninstall) / [s]kip / [q]uit > ") choice
+                read -P (_keys "    [t]rack (add to fish_plugins) / [i]gnore (never ask again) / [s]kip / [q]uit > ") choice
                 switch $choice
                     case t T track
                         echo $plugin >> $plugins_file_path
@@ -1440,11 +1455,11 @@ else
                         _log_change "tracked fisher plugin: $plugin"
                         echo "      $GLYPH_OK added to fish_plugins"
                         break
-                    case i I ignore uninstall
-                        _with_spinner "fisher remove $plugin…" fish -c "fisher remove $plugin"
-                        set fish_uninstalled (math $fish_uninstalled + 1)
-                        _log_change "uninstalled fisher plugin: $plugin"
-                        echo "      $GLYPH_OK uninstalled"
+                    case i I ignore
+                        echo $plugin >> $fisher_ignore_file
+                        set fish_ignored (math $fish_ignored + 1)
+                        _log_change "ignored fisher plugin (added to .fisherignore): $plugin"
+                        echo "      $GLYPH_OK added to .fisherignore"
                         break
                     case s S skip ''
                         echo "      $GLYPH_DIM skipped"
@@ -1496,16 +1511,17 @@ else
         end
     end
 
-    # Catch fish_plugins modifications that didn't surface through the drift
-    # check above — e.g. a `fisher install foo` (in or out of wrangle) added
-    # `foo` to the file before this pass ran, so installed-vs-file matches
-    # but the file is still dirty relative to its last commit.
-    _report_external_changes "fish_plugins has uncommitted changes" home/.config/fish/fish_plugins
+    # Catch fish_plugins / .fisherignore modifications that didn't surface
+    # through the drift check above — e.g. a `fisher install foo` (in or out
+    # of wrangle) added `foo` to the file before this pass ran, so
+    # installed-vs-file matches but the file is still dirty relative to its
+    # last commit; or the user hand-edited .fisherignore.
+    _report_external_changes "fish_plugins / .fisherignore has uncommitted changes" home/.config/fish/fish_plugins .fisherignore
 
     # Summary: only if any work happened. Otherwise the "fisher list matches
     # fish_plugins" ok-line above is the summary.
-    if test (math $fish_tracked + $fish_uninstalled + $fish_installed + $fish_removed) -gt 0
-        echo "  $GLYPH_OK "(_n $fish_tracked)" tracked, "(_n $fish_uninstalled)" uninstalled, "(_n $fish_installed)" installed, "(_n $fish_removed)" removed from fish_plugins"
+    if test (math $fish_tracked + $fish_ignored + $fish_installed + $fish_removed) -gt 0
+        echo "  $GLYPH_OK "(_n $fish_tracked)" tracked, "(_n $fish_ignored)" ignored, "(_n $fish_installed)" installed, "(_n $fish_removed)" removed from fish_plugins"
     end
 end
 
@@ -2001,7 +2017,7 @@ The repo has two documentation tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
   - PERSONAL docs describe the user's specific layer on top: post-bootstrap manual steps, tool-specific auth flows, machine-specific setup notes. These live on the machine-branch (default: `personal`). Create or update them when the machine-branch (Brewfile, tracked dotfiles, fish_plugins) adds something with known post-install or first-time-setup needs that aren't documented elsewhere. A common convention is a top-level PERSONAL.md, but you can split into multiple docs if it makes sense.
 
-You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/). Those are managed by other parts of the system.
+You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .fisherignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/). Those are managed by other parts of the system.
 
 Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail. Don't waste turns on tools that aren't whitelisted.
 
