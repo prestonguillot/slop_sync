@@ -95,7 +95,7 @@
 #      8.9  Pass 8: brew drift
 #      8.10 Pass 9: changelog
 #      8.11 Pass 10: commit
-#      8.12 Pass 11: claude doc review
+#      8.12 Pass 11: claude-code doc review
 #      8.13 Pass 12: push
 
 # ─── Preamble + subcommand dispatch ──────────────────────────────────────
