@@ -5,3 +5,4 @@
 # Examples:
 #   "Flighty"                    — strip any line containing "Flighty"
 #   @anthropic-ai/claude-code    — strip the npm claude-code line
+"amazon-photos"
