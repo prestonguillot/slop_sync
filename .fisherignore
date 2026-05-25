@@ -1,0 +1,4 @@
+# Fisher-plugin blocklist — wrangle won't ask about these.
+# One plugin identifier per line, exact match (e.g. `owner/repo` or a local
+# path). Comments (#) and blank lines ignored.
+# Typically populated by answering [i]gnore in a wrangle sync's fisher pass.

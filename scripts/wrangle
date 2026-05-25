@@ -16,7 +16,9 @@
 #   4. Re-stow              — link any new files in home/ to ~
 #   5. Dotfile drift        — untracked files in ~/.config + ~ → [t/i/s/q]
 #   6. Fisher drift         — installed vs ~/.config/fish/fish_plugins → [t/i/s/q] or [i/r/s/q]
-#   7. Univ-var drift       — installed fish universals (per-prefix) → [t/i/s/q]
+#   7. Univ-var drift       — import sub-pass (file → live, [a/k/s/q] on
+#                              conflict, silent apply on missing) + capture
+#                              sub-pass (live → file, per-prefix [t/i/s/q])
 #   8. Brew drift           — installed vs Brewfile → [t/i/s/q] or [i/r/s/q]
 #   9. Changelog            — append summary of changes to .wrangle-changelog
 #  10. Commit               — secret-scan staged diff, commit with auto/llm message
@@ -29,8 +31,11 @@
 #
 # Prompts use consistent letters:
 #   [t]rack          — capture into the repo
-#   [i]gnore forever — append to .dotignore or .brewignore (track) / install (brew/plugin)
+#   [i]gnore         — append to the per-pass skiplist (.dotignore / .brewignore /
+#                      .fisherignore / .univignore); leaves local state alone
 #   [r]emove         — yoink/drop from the repo
+#   [a]pply          — write repo's value into live state (univ-var conflict)
+#   [k]eep local     — leave live state alone (univ-var conflict)
 #   [s]kip           — leave alone; ask again next run
 #   [q]uit
 #
@@ -83,7 +88,7 @@ end
 
 # Reject unknown subcommands.
 switch $_subcmd
-    case sync pull push review-docs import-univ-vars set-parent reset-claude-session help
+    case sync pull push review-docs set-parent reset-claude-session help
         # known — handled below
     case '*'
         echo "wrangle: unknown subcommand: $_subcmd" >&2
@@ -114,7 +119,7 @@ switch $_subcmd
         set -q _flag_with_claude;      and _wrangle_reject_flag pull --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag pull --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag pull --no-branch-switch
-    case push review-docs import-univ-vars set-parent reset-claude-session help
+    case push review-docs set-parent reset-claude-session help
         # No flags besides --help.
         set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
         set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
@@ -133,7 +138,6 @@ function _wrangle_help_top
     echo "  pull [--resume]       fetch + cascade-merge along the parent chain"
     echo "  push                  push the current branch to origin (preview first)"
     echo "  review-docs           skip drift; have claude review docs against recent commits"
-    echo "  import-univ-vars      restore captured fish universals from exported-univ-vars.fish"
     echo "  set-parent <branch>   declare current branch's wrangle-parent in git config"
     echo "  reset-claude-session  drop cached claude session id; next claude call uses a fresh one"
     echo "  help [<subcmd>]       this message, or detailed help for a subcommand"
@@ -209,15 +213,6 @@ function _wrangle_help_review_docs
     echo "(if you ran this subcommand, you opted in for this run)."
 end
 
-function _wrangle_help_import_univ_vars
-    echo "Usage: wrangle import-univ-vars"
-    echo ""
-    echo "Source `home/.config/fish/exported-univ-vars.fish` to restore captured"
-    echo "plugin universal variables (tide, sponge, etc.) on a fresh machine."
-    echo "Errors if the file doesn't exist — capture them first by answering"
-    echo "[t]rack on a univ-var prefix during a `wrangle sync` session."
-end
-
 function _wrangle_help_set_parent
     echo "Usage: wrangle set-parent <branch>"
     echo ""
@@ -247,7 +242,6 @@ if test "$_subcmd" = help
             case pull;                  _wrangle_help_pull
             case push;                  _wrangle_help_push
             case review-docs;           _wrangle_help_review_docs
-            case import-univ-vars;      _wrangle_help_import_univ_vars
             case set-parent;            _wrangle_help_set_parent
             case reset-claude-session;  _wrangle_help_reset_claude_session
             case '*'
@@ -264,7 +258,6 @@ if set -q _flag_help
         case pull;                  _wrangle_help_pull
         case push;                  _wrangle_help_push
         case review-docs;           _wrangle_help_review_docs
-        case import-univ-vars;      _wrangle_help_import_univ_vars
         case set-parent;            _wrangle_help_set_parent
         case reset-claude-session;  _wrangle_help_reset_claude_session
     end
@@ -871,23 +864,6 @@ if test "$_subcmd" = push
     exit $status
 end
 
-# `wrangle import-univ-vars` — source the exported file, exit.
-if test "$_subcmd" = import-univ-vars
-    set -l export_file $repo/home/.config/fish/exported-univ-vars.fish
-    if not test -f $export_file
-        echo "$GLYPH_ERR No exported-univ-vars.fish found at $export_file." >&2
-        echo "  Capture them first by running `wrangle sync` and answering [t]rack on a univ-var prefix." >&2
-        exit 1
-    end
-    _header "Importing universal variables"
-    set -l before_count (count (set -U -L))
-    source $export_file
-    set -l after_count (count (set -U -L))
-    set -l delta (math $after_count - $before_count)
-    echo "  $GLYPH_OK sourced $export_file ($delta new vars set; $after_count total universals now)"
-    exit 0
-end
-
 # `wrangle review-docs` — skip drift entirely, invoke claude on current state.
 # Useful when you opted into claude AFTER making changes (so the normal sync
 # doc-sync path skipped because $_changes was empty), or when you've hand-
@@ -907,7 +883,7 @@ The repo has two doc tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free.
   - PERSONAL docs describe the user's specific layer: post-bootstrap manual steps, tool-specific auth, machine-specific setup notes. Live on the machine-branch (default: `personal`). A common convention is a top-level PERSONAL.md.
 
-You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/).
+You MAY edit any .md file and create new .md files. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .fisherignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/).
 
 Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail.
 
@@ -1236,10 +1212,15 @@ else
 end
 
 # ─── Skiplist (sole source: .dotignore) ──────────────────────────────────
-# Logic lives in scripts/_skiplist.fish (shared with test/skiplist.fish).
-# `--force` bypasses .dotignore entirely (the pre-commit secret-scan is the
-# secondary safety net).
+# Logic lives in scripts/_skiplist.fish (shared with test/skiplist.fish and
+# test/fisherignore.fish). `--force` bypasses .dotignore entirely (the
+# pre-commit secret-scan is the secondary safety net).
 source $repo/scripts/_skiplist.fish
+
+# Parser for exported-univ-vars.fish, used by Pass 7's import sub-pass to
+# read names + values without `source`ing the file (which would mutate
+# live state pre-decision). Shared with test/univ-import-parse.fish.
+source $repo/scripts/_univ_parse.fish
 
 set -l user_ignores
 if test "$_force" = no
@@ -1404,13 +1385,27 @@ else
         set plugins_in_file (cat $plugins_file_path | grep -v '^#' | grep -v '^$')
     end
 
+    # `.fisherignore`: exact plugin identifiers the user has told us never to
+    # nag about. Parsed by the shared loader (comment + blank-line stripping
+    # is what we need; matching is exact via `contains --`, not glob). `--force`
+    # bypasses, same as `.dotignore`.
+    set -l fisher_ignore_file $repo/.fisherignore
+    set -l fisher_ignores
+    if test "$_force" = no
+        set fisher_ignores (_wrangle_load_dotignore $fisher_ignore_file)
+    end
+
     set -l plugin_added
     for p in $fisher_listed
-        contains -- $p $plugins_in_file; or set -a plugin_added $p
+        contains -- $p $plugins_in_file; and continue
+        contains -- $p $fisher_ignores; and continue
+        set -a plugin_added $p
     end
     set -l plugin_missing
     for p in $plugins_in_file
-        contains -- $p $fisher_listed; or set -a plugin_missing $p
+        contains -- $p $fisher_listed; and continue
+        contains -- $p $fisher_ignores; and continue
+        set -a plugin_missing $p
     end
 
     if test (count $plugin_added) -eq 0; and test (count $plugin_missing) -eq 0
@@ -1418,7 +1413,7 @@ else
     end
 
     set -l fish_tracked 0
-    set -l fish_uninstalled 0
+    set -l fish_ignored 0
     set -l fish_installed 0
     set -l fish_removed 0
 
@@ -1431,7 +1426,7 @@ else
                 continue
             end
             while true
-                read -P (_keys "    [t]rack (add to fish_plugins) / [i]ignore (uninstall) / [s]kip / [q]uit > ") choice
+                read -P (_keys "    [t]rack (add to fish_plugins) / [i]gnore (never ask again) / [s]kip / [q]uit > ") choice
                 switch $choice
                     case t T track
                         echo $plugin >> $plugins_file_path
@@ -1440,11 +1435,11 @@ else
                         _log_change "tracked fisher plugin: $plugin"
                         echo "      $GLYPH_OK added to fish_plugins"
                         break
-                    case i I ignore uninstall
-                        _with_spinner "fisher remove $plugin…" fish -c "fisher remove $plugin"
-                        set fish_uninstalled (math $fish_uninstalled + 1)
-                        _log_change "uninstalled fisher plugin: $plugin"
-                        echo "      $GLYPH_OK uninstalled"
+                    case i I ignore
+                        echo $plugin >> $fisher_ignore_file
+                        set fish_ignored (math $fish_ignored + 1)
+                        _log_change "ignored fisher plugin (added to .fisherignore): $plugin"
+                        echo "      $GLYPH_OK added to .fisherignore"
                         break
                     case s S skip ''
                         echo "      $GLYPH_DIM skipped"
@@ -1496,16 +1491,17 @@ else
         end
     end
 
-    # Catch fish_plugins modifications that didn't surface through the drift
-    # check above — e.g. a `fisher install foo` (in or out of wrangle) added
-    # `foo` to the file before this pass ran, so installed-vs-file matches
-    # but the file is still dirty relative to its last commit.
-    _report_external_changes "fish_plugins has uncommitted changes" home/.config/fish/fish_plugins
+    # Catch fish_plugins / .fisherignore modifications that didn't surface
+    # through the drift check above — e.g. a `fisher install foo` (in or out
+    # of wrangle) added `foo` to the file before this pass ran, so
+    # installed-vs-file matches but the file is still dirty relative to its
+    # last commit; or the user hand-edited .fisherignore.
+    _report_external_changes "fish_plugins / .fisherignore has uncommitted changes" home/.config/fish/fish_plugins .fisherignore
 
     # Summary: only if any work happened. Otherwise the "fisher list matches
     # fish_plugins" ok-line above is the summary.
-    if test (math $fish_tracked + $fish_uninstalled + $fish_installed + $fish_removed) -gt 0
-        echo "  $GLYPH_OK "(_n $fish_tracked)" tracked, "(_n $fish_uninstalled)" uninstalled, "(_n $fish_installed)" installed, "(_n $fish_removed)" removed from fish_plugins"
+    if test (math $fish_tracked + $fish_ignored + $fish_installed + $fish_removed) -gt 0
+        echo "  $GLYPH_OK "(_n $fish_tracked)" tracked, "(_n $fish_ignored)" ignored, "(_n $fish_installed)" installed, "(_n $fish_removed)" removed from fish_plugins"
     end
 end
 
@@ -1516,11 +1512,24 @@ end
 # make them their SOLE persistence mechanism. Scope is intentionally narrow
 # — see .univexport for the allowlist and the doc comments there.
 #
-# Drift detection mirrors brew/fisher/dotfile patterns:
-#   - group installed univs by prefix
-#   - filter by .univexport (already tracked) + .univignore (already ignored)
-#   - prompt [t]rack / [i]gnore forever / [s]kip / [q]uit per remaining group
-#   - on track: append pattern to .univexport, regenerate exported-univ-vars.fish
+# Two sub-passes, matching fisher/brew's two-direction shape:
+#
+#  A. IMPORT (repo file → live shell):
+#     - parse home/.config/fish/exported-univ-vars.fish for tracked names+values
+#     - filter by .univexport (only currently-tracked vars) + .univignore
+#     - missing on machine    → silent apply (dotfile-stow precedent)
+#     - same value live       → no-op
+#     - different value live  → prompt [a]pply / [k]eep local / [s]kip / [q]uit
+#
+#  B. CAPTURE (live shell → repo file):
+#     - group installed univs by prefix
+#     - filter by .univexport (already tracked) + .univignore (already ignored)
+#     - prompt [t]rack / [i]gnore forever / [s]kip / [q]uit per remaining group
+#     - on track: append pattern to .univexport, regenerate exported-univ-vars.fish
+#
+# Import runs first so the capture pass sees the post-import live state;
+# this means `[k]eep local` on a conflict naturally resolves itself when
+# capture regenerates the file with your live value.
 echo ""
 _header "Univ-var drift"
 
@@ -1554,7 +1563,7 @@ function _univ_regenerate --inherit-variable univ_export_file --inherit-variable
     mkdir -p (dirname $univ_output_file)
     set -l tmp (mktemp)
     echo "# Auto-generated by wrangle. Edit .univexport (allowlist) and re-run wrangle." > $tmp
-    echo "# Restore on a new machine with: wrangle --import-univ-vars" >> $tmp
+    echo "# Restored automatically by `wrangle sync` (import sub-pass of Pass 7)." >> $tmp
     echo "" >> $tmp
     for name in (set -U -L | awk '{print $1}' | sort)
         set -l matched no
@@ -1579,11 +1588,8 @@ function _univ_regenerate --inherit-variable univ_export_file --inherit-variable
     mv $tmp $univ_output_file
 end
 
-# Detection runs unconditionally; mutating actions (prompts + writes +
-# regenerate) are gated by `$_dry_run` below so `wrangle sync --dry-run`
-# still surfaces the auto-skipped count + drift summary.
-
-# Load allowlist / blocklist patterns (skip comments + blanks).
+# Load allowlist / blocklist patterns once — shared by both sub-passes
+# (skip comments + blanks).
 set -l allowed_patterns
 set -l ignored_patterns
 if test -f $univ_export_file
@@ -1592,6 +1598,114 @@ end
 if test -f $univ_ignore_file
     set ignored_patterns (grep -vE '^\s*(#|$)' $univ_ignore_file)
 end
+
+# ─── Sub-pass A: import (repo file → live shell) ─────────────────────────
+# Read tracked names + values from exported-univ-vars.fish, compare to live.
+# Missing on machine: silent apply (matches dotfile-stow precedent — no
+# conflict, no prompt). Different value: per-var [a/k/s/q] prompt.
+set -l univ_applied 0
+set -l univ_kept_local 0
+set -l univ_conflict_skipped 0
+
+if test -f $univ_output_file
+    set -l import_names (_wrangle_univ_parse_names $univ_output_file)
+
+    set -l conflicts
+    set -l missing
+
+    for name in $import_names
+        # Only consider currently-tracked vars (filter by .univexport).
+        set -l in_allowlist no
+        for p in $allowed_patterns
+            string match -q $p $name; and set in_allowlist yes; and break
+        end
+        test "$in_allowlist" = yes; or continue
+
+        # Defense: skip if in .univignore (shouldn't happen for an exported
+        # var, but covers hand-edits).
+        set -l in_blocklist no
+        for p in $ignored_patterns
+            string match -q $p $name; and set in_blocklist yes; and break
+        end
+        test "$in_blocklist" = yes; and continue
+
+        set -l repo_values (_wrangle_univ_parse_values $univ_output_file $name)
+        test (count $repo_values) -eq 0; and continue
+
+        if not set -q $name
+            set -a missing $name
+            continue
+        end
+        set -l live_values $$name
+        # Structural list-equality: join with RS (\x1e), unlikely in values.
+        if test "(string join \x1e $live_values)" = "(string join \x1e $repo_values)"
+            continue
+        end
+        set -a conflicts $name
+    end
+
+    if test "$_dry_run" = yes
+        if test (count $missing) -gt 0
+            echo "  $GLYPH_DIM import: "(_n (count $missing))" tracked var(s) missing on machine (would silent-apply)"
+        end
+        if test (count $conflicts) -gt 0
+            echo "  $GLYPH_DIM import: "(_n (count $conflicts))" tracked var(s) with conflicting values (would prompt)"
+        end
+    else
+        # Silent apply for missing-on-machine — dotfile-stow precedent.
+        for name in $missing
+            set -l vals (_wrangle_univ_parse_values $univ_output_file $name)
+            set -U --erase $name 2>/dev/null
+            set -U $name $vals
+            set univ_applied (math $univ_applied + 1)
+            _log_change "applied univ-var from repo: $name"
+        end
+
+        # Prompt per conflict.
+        for name in $conflicts
+            set -l repo_values (_wrangle_univ_parse_values $univ_output_file $name)
+            set -l live_values $$name
+            echo ""
+            echo "    "(_name $name)" — value differs:"
+            echo "      live: "(_dim)(string join " " $live_values)(_rs)
+            echo "      repo: "(_dim)(string join " " $repo_values)(_rs)
+            while true
+                read -P (_keys "    [a]pply repo value (overwrite local) / [k]eep local / [s]kip / [q]uit > ") choice
+                switch $choice
+                    case a A apply
+                        set -U --erase $name
+                        set -U $name $repo_values
+                        set univ_applied (math $univ_applied + 1)
+                        _log_change "applied univ-var from repo (overwrote local): $name"
+                        echo "      $GLYPH_OK applied repo value"
+                        break
+                    case k K keep
+                        set univ_kept_local (math $univ_kept_local + 1)
+                        _log_change "kept local univ-var value over repo: $name"
+                        echo "      $GLYPH_OK kept local (capture pass will regenerate file)"
+                        break
+                    case s S skip ''
+                        set univ_conflict_skipped (math $univ_conflict_skipped + 1)
+                        echo "      $GLYPH_DIM skipped (will ask again next run)"
+                        break
+                    case q Q quit
+                        _wrangle_abort quit
+                    case '*'
+                        echo "      ? '$choice' — answer a/k/s/q"
+                end
+            end
+        end
+
+        if test (math $univ_applied + $univ_kept_local + $univ_conflict_skipped) -gt 0
+            echo "  $GLYPH_OK import: "(_n $univ_applied)" applied, "(_n $univ_kept_local)" kept-local, "(_n $univ_conflict_skipped)" skipped"
+        end
+    end
+end
+
+# ─── Sub-pass B: capture (live shell → repo file) ────────────────────────
+# Detection runs unconditionally; mutating actions (prompts + writes +
+# regenerate) are gated by `$_dry_run` below so `wrangle sync --dry-run`
+# still surfaces the auto-skipped count + drift summary.
 
 # Get all current universals, partition into groups by prefix.
 # We need: list of (prefix → [var names]) for untracked + un-ignored vars.
@@ -2001,7 +2115,7 @@ The repo has two documentation tiers:
   - FRAMEWORK docs describe the sync system itself: README.md and setup-new-machine.md at the repo root. They live on `main` and should stay opinion-free (no presumption of specific tools, no personal preferences). Edit these only if the framework itself changed in a way that makes existing text factually wrong.
   - PERSONAL docs describe the user's specific layer on top: post-bootstrap manual steps, tool-specific auth flows, machine-specific setup notes. These live on the machine-branch (default: `personal`). Create or update them when the machine-branch (Brewfile, tracked dotfiles, fish_plugins) adds something with known post-install or first-time-setup needs that aren't documented elsewhere. A common convention is a top-level PERSONAL.md, but you can split into multiple docs if it makes sense.
 
-You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/). Those are managed by other parts of the system.
+You MAY edit any .md file in the repo, and create new .md files when warranted. You MUST NOT touch anything under scripts/, the Brewfile, fish_plugins, .dotignore, .brewignore, .fisherignore, .gitignore, any file under home/, or any dotfile/dotdir (including .claude/, .git/, .github/). Those are managed by other parts of the system.
 
 Only the Edit, Write, Read, Grep, and Glob tools are available to you. Don't attempt Bash, WebFetch, Task, etc. — there's no TTY to approve them and they'll fail. Don't waste turns on tools that aren't whitelisted.
 
