@@ -72,7 +72,7 @@ Three nags fire on shell start to keep you honest: staleness (haven't run wrangl
 Domain-specific bits:
 
 - **Dotfiles**: wrangle walks top-level `~/.<name>` files and `~/.config/*` entries. For each untracked entry on the machine, you get `[t]rack` (mv into `home/`, symlink back), `[i]gnore forever` (append to `.dotignore`), `[s]kip`, or `[q]uit`. The other direction (file in `home/` but missing from `~`) splits into two cases: if you previously had it and deleted it, you get a yoink prompt asking whether to remove it from the repo or restore via stow; if it's genuinely new (e.g. arrived in a pulled commit), stow symlinks it into `~` silently.
-- **Fisher plugins**: compares `fisher list` against the tracked `fish_plugins` file. Plugins installed but not tracked → `[t]rack` / `[i]gnore` (which uninstalls) / `[s]kip`. Plugins tracked but not installed → `[i]nstall` / `[r]emove from fish_plugins` / `[s]kip`.
+- **Fisher plugins**: compares `fisher list` against the tracked `fish_plugins` file, filtering both sides through `.fisherignore`. Plugins installed but not tracked → `[t]rack` / `[i]gnore` (appends to `.fisherignore`, leaves the plugin installed) / `[s]kip`. Plugins tracked but not installed → `[i]nstall` / `[r]emove from fish_plugins` / `[s]kip`. Wrangle never prompts to uninstall — if you want a plugin gone, run `fisher remove` directly.
 - **Fish universals**: collects current universals (`set -U -L`), auto-skips anything starting with `_` (fish + plugin internal convention), groups the rest by prefix. For each new prefix group, offers to track the pattern (e.g. `tide_*`) into `.univexport`, ignore forever into `.univignore`, or skip.
 - **Brew**: calls `dump-brewfile` (a thin wrapper around `brew bundle dump --describe --force`, filtered through `.brewignore`) and diffs the result against your tracked `Brewfile`. When something's installed locally but missing from the Brewfile, wrangle asks whether to track it, add a `.brewignore` substring so it stops nagging, or skip. When something's in the Brewfile but not installed locally, it asks whether to install it, drop it from the Brewfile, or skip.
 
@@ -122,6 +122,7 @@ home/            Mirrors ~. Stow-managed. On main, only contains the framework's
 
 .dotignore       Per-line substring patterns / globs that the dotfile pass skips.
 .brewignore      Per-line substrings that get stripped from auto-dumped Brewfile.
+.fisherignore    Per-line exact plugin identifiers the fisher pass skips.
 .univexport      Allowlist of fish-universal-variable patterns to capture.
 .univignore      Blocklist of universals to never ask about.
 .gitignore       Editor swap files, macOS noise, .env, .wrangle-changelog, etc.
@@ -149,12 +150,13 @@ Bare `wrangle`, `wrangle -h`, and `wrangle --help` all print top-level help. The
 
 ## Customization
 
-There are four user-editable files at the repo root that wrangle reads. All take one substring / fish-glob pattern per line; `#` comments are fine.
+There are five user-editable files at the repo root that wrangle reads. All take one entry per line; `#` comments are fine.
 
 | File | What it controls | Typical entries |
 |---|---|---|
-| `.dotignore` | Paths under `~` that wrangle never asks about. Pre-populated with credential-bearing paths (`.aws`, `.config/gh`, `.npmrc`, etc.). | Credential dirs, caches, history files, big data dirs. |
-| `.brewignore` | Lines stripped from the auto-dumped Brewfile *before* wrangle compares against the tracked Brewfile. | Apps you've installed locally but don't want to drag to other machines. |
+| `.dotignore` | Paths under `~` that wrangle never asks about. Pre-populated with credential-bearing paths (`.aws`, `.config/gh`, `.npmrc`, etc.). Substring patterns / fish-globs. | Credential dirs, caches, history files, big data dirs. |
+| `.brewignore` | Lines stripped from the auto-dumped Brewfile *before* wrangle compares against the tracked Brewfile. Substring matches. | Apps you've installed locally but don't want to drag to other machines. |
+| `.fisherignore` | Fisher plugins wrangle never asks about. Exact match against `fisher list` output. | `PatrickF1/fzf.fish`, etc. |
 | `.univexport` | Fish universal-variable names/patterns to capture into the exportable file. | `tide_*`, `sponge_*`, etc. Exact names also work (override the auto-skip of `_*`). |
 | `.univignore` | Universal-variable names/patterns wrangle never asks about. | `_*` (fish/plugin internal state) — already auto-skipped, so this is mainly for one-off vars. |
 
