@@ -83,8 +83,12 @@ echo 'function fisher; if test "$argv[1]" = list; echo "stub-author/stub-plugin"
 echo "stub-author/stub-plugin" >> $fix2/.fisherignore
 git -C $fix2 commit -q -am 'fisherignore entry for test'
 
+# Pin XDG_CONFIG_HOME so fish finds our conf.d stub regardless of the host's
+# XDG settings (Linux CI sometimes presets XDG_CONFIG_HOME to a path that
+# bypasses $HOME/.config/fish/ entirely).
 begin
     set -lx HOME $home2
+    set -lx XDG_CONFIG_HOME $home2/.config
     set -l out (env WRANGLE_NO_BRANCH_SWITCH=1 $fix2/scripts/wrangle sync --dry-run 2>&1)
     not string match -q '*matches .fisherignore*' -- "$out"
     @test "fisher: no --verbose → no 'matches .fisherignore' line" $status -eq 0
@@ -92,6 +96,7 @@ end
 
 begin
     set -lx HOME $home2
+    set -lx XDG_CONFIG_HOME $home2/.config
     set -l out (env WRANGLE_NO_BRANCH_SWITCH=1 $fix2/scripts/wrangle sync --dry-run --verbose 2>&1)
     string match -q '*matches .fisherignore*' -- "$out"
     @test "fisher: --verbose → 'matches .fisherignore' line appears" $status -eq 0
@@ -111,20 +116,27 @@ rm -rf $fix2 $home2
 
 set -l f3 (_wrangle_verbose_fixture)
 set -l fix3 $f3[1]; set -l home3 $f3[2]
-mkdir -p $home3/.config/fish
+mkdir -p $home3/.config/fish $home3/.local/share/fish
 # fish_variables format requires the magic VERSION header — without it
 # fish prints "Unable to parse universal variable message" and skips all
 # our seeded vars.
+#
+# Seed BOTH the legacy ($XDG_CONFIG_HOME/fish/) and modern
+# ($XDG_DATA_HOME/fish/) locations because fish 3.4+ moved the file
+# (CI's fish version may differ from local).
 printf '%s\n%s\n%s\n' \
     '# This file contains fish universal variable definitions.' \
     '# VERSION: 3.0' \
     'SETUVAR univignore_test_var:bar' \
-    > $home3/.config/fish/fish_variables
+    | tee $home3/.config/fish/fish_variables $home3/.local/share/fish/fish_variables \
+    > /dev/null
 echo "univignore_test_var" >> $fix3/.univignore
 git -C $fix3 commit -q -am 'univignore entry for test'
 
 begin
     set -lx HOME $home3
+    set -lx XDG_CONFIG_HOME $home3/.config
+    set -lx XDG_DATA_HOME $home3/.local/share
     set -l out (env WRANGLE_NO_BRANCH_SWITCH=1 $fix3/scripts/wrangle sync --dry-run 2>&1)
     not string match -q '*matches .univignore*' -- "$out"
     @test "univ-var: no --verbose → no 'matches .univignore' line" $status -eq 0
@@ -132,6 +144,8 @@ end
 
 begin
     set -lx HOME $home3
+    set -lx XDG_CONFIG_HOME $home3/.config
+    set -lx XDG_DATA_HOME $home3/.local/share
     set -l out (env WRANGLE_NO_BRANCH_SWITCH=1 $fix3/scripts/wrangle sync --dry-run --verbose 2>&1)
     string match -q '*matches .univignore*' -- "$out"
     @test "univ-var: --verbose → 'matches .univignore' line appears" $status -eq 0
