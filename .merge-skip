@@ -10,3 +10,20 @@
 #     univ    → the .univexport pattern (e.g. tide_*)
 #
 # Comments (#) and blank lines are ignored.
+dotfile home/.config/opencode/opencode.json
+brew brew "awscli"
+brew brew "kubernetes-cli"
+brew brew "metals"
+brew brew "python@3.13"
+brew brew "mkdocs"
+brew brew "mysql-client"
+brew brew "newrelic-cli"
+brew brew "poppler"
+brew brew "ankitpokhrel/jira-cli/jira-cli"
+brew brew "ck-private/tap/ck-mcp-wrapper"
+brew cask "fantastical"
+brew cask "firefox@developer-edition"
+brew cask "gcloud-cli"
+brew cask "git-credential-manager"
+brew cask "rancher"
+brew mas "Okta Verify", id: 490179405
