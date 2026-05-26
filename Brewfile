@@ -98,3 +98,4 @@ mas "Fantastical", id: 975937182
 cask "font-symbols-only-nerd-font"
 # Video game digital distribution service
 cask "steam"
+brew "mergiraf"
