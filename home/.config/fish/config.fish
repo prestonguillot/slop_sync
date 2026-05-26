@@ -14,12 +14,6 @@ set -g history_max_size 2000
 fish_add_path --path --global --prepend $HOME/bin
 fish_add_path --path --global --append  $HOME/.local/bin /sbin /usr/sbin
 
-# This repo's scripts/ — config.fish is symlinked into the repo via stow,
-# so realpath gives us the actual repo regardless of clone location.
-set -l _dotfiles_repo (realpath (status -f) | string replace -r '/home/\.config/fish/config\.fish$' '')
-test -d $_dotfiles_repo/scripts; and fish_add_path --path --global --append $_dotfiles_repo/scripts
-set -e _dotfiles_repo
-
 # ── Env exports ───────────────────────────────────────────────────────────
 # Suppress venv's `(venvname)` prompt prefix — tide already shows the venv.
 set -gx VIRTUAL_ENV_DISABLE_PROMPT 1
