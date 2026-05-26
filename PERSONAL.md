@@ -44,7 +44,47 @@ fnm default lts-latest
 
 ## Mac App Store
 
-Sign into the App Store app with the Apple ID that originally purchased my MAS apps (currently just Fantastical, `id: 975937182`). `brew bundle install` will skip MAS lines for unowned apps with a warning rather than failing.
+Sign into the App Store app with the Apple ID that originally purchased my MAS apps (currently Okta Verify, `id: 490179405`). `brew bundle install` will skip MAS lines for unowned apps with a warning rather than failing.
+
+## Google Cloud CLI (`gcloud`)
+
+`gcloud-cli` installs the `gcloud` binary but ships with no credentials. Authenticate once per machine:
+
+```fish
+gcloud auth login
+gcloud auth application-default login
+```
+
+The first command gives you interactive CLI access; the second sets up Application Default Credentials for SDKs and local tools. Both open a browser flow.
+
+## AWS CLI (`awscli`)
+
+`awscli` installs the `aws` binary but requires credentials before it can talk to AWS. The right setup depends on whether you're using IAM keys or AWS SSO (more likely for work):
+
+```fish
+# SSO (preferred for Intuit accounts):
+aws configure sso
+
+# Or for personal/static credentials:
+aws configure
+```
+
+Follow the prompts. After SSO setup, authenticate per-session with `aws sso login --profile <profile-name>`.
+
+## Git Credential Manager (`git-credential-manager`)
+
+`git-credential-manager` (GCM) is a cross-platform credential helper for Git. It installs itself as a Git credential helper on first run. No manual configuration is needed — it will prompt on your first `git push`/`git pull` to a new host and store the token in macOS Keychain.
+
+If you're on a machine where `gh` is already set up as the credential helper for github.com (see the GitHub auth section above), GCM and `gh` can coexist — `home/.gitconfig` controls which one handles which host.
+
+## Rancher Desktop (`rancher`)
+
+Rancher Desktop provides local Kubernetes and a Docker-compatible container runtime. On first launch it will ask you to:
+
+1. Choose a container runtime (containerd or dockerd/moby).
+2. Configure the Kubernetes version.
+
+It also installs `kubectl`, `helm`, `nerdctl`, and `docker` CLI shims under `~/.rd/bin/`. Make sure that path is in `$PATH` (the fish config in this repo should handle it if `~/.rd/bin` is included).
 
 ## Fisher plugins
 
