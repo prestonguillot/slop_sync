@@ -127,7 +127,7 @@ end
 
 # Argparse: declares the UNION of all subcommand flags. We then validate
 # per-subcommand which flags are allowed.
-argparse h/help d/dry-run f/force with-claude suppress-claude no-branch-switch -- $argv
+argparse h/help d/dry-run f/force v/verbose with-claude suppress-claude no-branch-switch -- $argv
 or exit 1
 
 # Per-subcommand flag-validity gate.
@@ -141,7 +141,10 @@ switch $_subcmd
         # sync accepts all the configured flags; nothing to reject.
     case merge
         # merge accepts --force (bypasses .merge-skip). Reject everything else.
+        # --verbose is rejected on merge: merge already prints ignore-match
+        # info unconditionally, so the flag would be a confusing no-op.
         set -q _flag_dry_run;          and _wrangle_reject_flag merge --dry-run
+        set -q _flag_verbose;          and _wrangle_reject_flag merge --verbose
         set -q _flag_with_claude;      and _wrangle_reject_flag merge --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag merge --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag merge --no-branch-switch
@@ -149,6 +152,7 @@ switch $_subcmd
         # No flags besides --help.
         set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
         set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
+        set -q _flag_verbose;          and _wrangle_reject_flag $_subcmd --verbose
         set -q _flag_with_claude;      and _wrangle_reject_flag $_subcmd --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag $_subcmd --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag $_subcmd --no-branch-switch
@@ -182,7 +186,7 @@ function _wrangle_help_top
 end
 
 function _wrangle_help_sync
-    echo "Usage: wrangle sync [-d|--dry-run] [-f|--force]"
+    echo "Usage: wrangle sync [-d|--dry-run] [-f|--force] [-v|--verbose]"
     echo "                    [--with-claude|--suppress-claude]"
     echo "                    [--no-branch-switch]"
     echo ""
@@ -192,6 +196,10 @@ function _wrangle_help_sync
     echo "Options:"
     echo "  -d, --dry-run         detect drift, change nothing, no commit, no push"
     echo "  -f, --force           re-ask about paths already in .dotignore"
+    echo "  -v, --verbose         emit a one-line note when an item is silently"
+    echo "                        skipped by .dotignore / .fisherignore /"
+    echo "                        .univignore / .brewignore (or the auto-skip"
+    echo "                        of `_*` private univ-vars)"
     echo "  --with-claude         force-on claude doc review this run (overrides config)"
     echo "  --suppress-claude     force-off claude this run (overrides config)"
     echo "  --no-branch-switch    skip the framework update at the start (stay on current branch)"
@@ -294,8 +302,10 @@ end
 
 set -g _dry_run no
 set -g _force no
+set -g _verbose no
 set -q _flag_dry_run; and set -g _dry_run yes
 set -q _flag_force; and set -g _force yes
+set -q _flag_verbose; and set -g _verbose yes
 
 set -l script_dir (dirname (realpath (status -f)))
 set -l repo (git -C $script_dir rev-parse --show-toplevel 2>/dev/null)
@@ -1579,16 +1589,22 @@ set -l candidates
 for f in $HOME/.[A-Za-z0-9]*
     test -L $f; and continue
     set -l rel (string replace -- $HOME/ "" $f)
-    if not _is_skipped $rel; and not _is_tracked $rel
-        set -a candidates $rel
+    if _is_skipped $rel
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $rel)" (matches .dotignore)"
+        continue
     end
+    _is_tracked $rel; and continue
+    set -a candidates $rel
 end
 for f in $HOME/.config/*
     test -L $f; and continue
     set -l rel (string replace -- $HOME/ "" $f)
-    if not _is_skipped $rel; and not _is_tracked $rel
-        set -a candidates $rel
+    if _is_skipped $rel
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $rel)" (matches .dotignore)"
+        continue
     end
+    _is_tracked $rel; and continue
+    set -a candidates $rel
 end
 
 if test (count $candidates) -eq 0
@@ -1684,13 +1700,19 @@ else
     set -l plugin_added
     for p in $fisher_listed
         contains -- $p $plugins_in_file; and continue
-        contains -- $p $fisher_ignores; and continue
+        if contains -- $p $fisher_ignores
+            test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $p)" (matches .fisherignore)"
+            continue
+        end
         set -a plugin_added $p
     end
     set -l plugin_missing
     for p in $plugins_in_file
         contains -- $p $fisher_listed; and continue
-        contains -- $p $fisher_ignores; and continue
+        if contains -- $p $fisher_ignores
+            test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $p)" (matches .fisherignore)"
+            continue
+        end
         set -a plugin_missing $p
     end
 
@@ -2003,23 +2025,31 @@ set -l drift_standalone
 set -l auto_skipped_private 0
 
 for name in (set -U -L | awk '{print $1}')
-    # Skip if matches any allowlist pattern (already tracked)
+    # Skip if matches any allowlist pattern (already tracked) — silent always,
+    # this is the "expected" path (tracked vars don't need re-prompting).
     set -l skip no
     for p in $allowed_patterns
         string match -q $p $name; and set skip yes; and break
     end
     test "$skip" = yes; and continue
-    # Skip if matches any ignore pattern (already ignored)
+    # Skip if matches any ignore pattern (already ignored). Surface under --verbose.
+    set -l matched_ignore_pat
     for p in $ignored_patterns
-        string match -q $p $name; and set skip yes; and break
+        if string match -q $p $name
+            set skip yes; set matched_ignore_pat $p; break
+        end
     end
-    test "$skip" = yes; and continue
+    if test "$skip" = yes
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $name)" (matches .univignore: $matched_ignore_pat)"
+        continue
+    end
     # Auto-skip fish's private/internal convention: names starting with `_`
     # (fish builtins use `__name`, plugins use `_pluginname_*` for caches).
     # Explicit allowlist matches above still win, so you can opt in by
     # adding an exact name (e.g. `_foo`) to .univexport manually.
     if string match -q '_*' $name
         set auto_skipped_private (math $auto_skipped_private + 1)
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $name)" (auto-skip: private/internal `_*` convention)"
         continue
     end
 
@@ -2161,9 +2191,22 @@ if not command -q brew
     echo "  brew not installed; skipping."
 else
     set -l tmp_dump (mktemp)
+    set -l tmp_dump_stderr (mktemp)
     _spinner_start "Scanning installed brew state…"
-    $repo/scripts/dump-brewfile $tmp_dump 2>/dev/null
+    set -l dump_args $tmp_dump
+    test "$_verbose" = yes; and set dump_args --verbose $dump_args
+    $repo/scripts/dump-brewfile $dump_args 2>$tmp_dump_stderr
     _spinner_stop
+    if test "$_verbose" = yes; and test -s $tmp_dump_stderr
+        # dump-brewfile --verbose emits one "<line>\t(matches .brewignore: <pat>)"
+        # line to stderr per filtered entry. Surface each in our own DIM format.
+        while read -l ln
+            set -l parts (string split -m 1 \t -- $ln)
+            test (count $parts) -eq 2; or continue
+            echo "  $GLYPH_DIM skipping "(_name $parts[1])" $parts[2]"
+        end < $tmp_dump_stderr
+    end
+    rm -f $tmp_dump_stderr
 
     set -l brewfile_path $repo/Brewfile
     set -l tracked_entries

@@ -10,16 +10,17 @@
 # Brewfile containing a pattern as a substring is removed, along with the
 # preceding `# description` comment if any.
 
-argparse h/help input= ignore-file= -- $argv
+argparse h/help v/verbose input= ignore-file= -- $argv
 or exit 1
 
 if set -q _flag_help
     echo "Usage: dump-brewfile [TARGET]"
-    echo "       dump-brewfile [--input INPUT] [--ignore-file FILE] TARGET"
+    echo "       dump-brewfile [--input INPUT] [--ignore-file FILE] [-v|--verbose] TARGET"
     echo ""
     echo "Wraps 'brew bundle dump --describe --force --file=TARGET' with .brewignore filtering."
     echo "  --input FILE        filter FILE instead of calling brew (for tests)"
     echo "  --ignore-file FILE  use FILE as ignore list instead of <repo>/.brewignore"
+    echo "  -v, --verbose       emit each filtered (dropped) line to stderr with the matched pattern"
     echo "TARGET defaults to <repo>/Brewfile."
     exit 0
 end
@@ -81,14 +82,17 @@ while read -l line
     end
 
     set -l matched no
+    set -l matched_pat
     for p in $patterns
         if string match -q "*$p*" -- "$line"
             set matched yes
+            set matched_pat $p
             break
         end
     end
 
     if test "$matched" = yes
+        set -q _flag_verbose; and echo "$line	(matches .brewignore: $matched_pat)" >&2
         set pending ""  # also drop the held comment
     else
         test -n "$pending"; and echo "$pending" >> $tmp_filtered
