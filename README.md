@@ -98,7 +98,7 @@ One git config key controls this, per-clone (not pushed):
 
 **`wrangle update`** fetches origin and merges `origin/main` into the current machine-branch. Single edge — no chain. On merge conflict it stops, prints what to resolve; resolve manually (`git add` + `git commit`), then re-run.
 
-**`wrangle merge <branch>`** brings personal-layer content from another machine-branch into the current one. Walks dotfiles + Brewfile + fish_plugins + univ-vars, comparing the source branch's tracked state to the current branch's. For each item the source has and you don't (or have differently), it prompts: `[a]dopt` source's version, `[f]orever` (never adopt this in any future merge — appends to `.merge-skip`), `[k]eep mine` (on conflict only), `[d]iff` (on conflict only), `[s]kip` (this run only), `[q]uit`. Items matching the current branch's `.ignore` files OR `.merge-skip` are skipped with a one-line note. `wrangle merge <branch> --force` bypasses `.merge-skip` so previously-`[f]orever`ed items re-surface.
+**`wrangle merge <branch>`** brings personal-layer content from another machine-branch into the current one. Walks dotfiles + Brewfile + fish_plugins + univ-vars, comparing the source branch's tracked state to the current branch's. For each item the source has and you don't (or have differently), it prompts: `[a]dopt` source's version, `skip [f]orever` (never adopt this in any future merge — appends to `.merge-skip`), `[k]eep mine` (on conflict only), `[d]iff` (on conflict only), `[s]kip` (this run only), `[q]uit`. Items matching the current branch's `.ignore` files OR `.merge-skip` are skipped with a one-line note. `wrangle merge <branch> --force` bypasses `.merge-skip` so previously-`skip [f]orever`ed items re-surface.
 
 `wrangle merge` is **add-only**: items YOU have that the source doesn't are left alone. To stop tracking something, use the existing `[i]gnore` flow on your machine. Framework files (`scripts/`, `README.md`, etc.) are never touched — those go via PR → `main` → `wrangle update`.
 
@@ -129,7 +129,7 @@ home/            Mirrors ~. Stow-managed. On main, only contains the framework's
 .fisherignore    Per-line exact plugin identifiers the fisher pass skips.
 .univexport      Allowlist of fish-universal-variable patterns to capture.
 .univignore      Blocklist of universals to never ask about.
-.merge-skip      Items `wrangle merge` silently skips (populated by [f]orever; bypass with --force).
+.merge-skip      Items `wrangle merge` silently skips (populated by `skip [f]orever`; bypass with --force).
 .gitignore       Editor swap files, macOS noise, .env, .wrangle-changelog, etc.
 
 setup-new-machine.md   Walkthrough for the first run on a fresh machine.
@@ -162,7 +162,7 @@ There are six user-editable files at the repo root that wrangle reads. All take 
 | `.fisherignore` | Fisher plugins wrangle never asks about. Exact match against `fisher list` output. | `PatrickF1/fzf.fish`, etc. |
 | `.univexport` | Fish universal-variable names/patterns to capture into the exportable file. | `tide_*`, `sponge_*`, etc. Exact names also work (override the auto-skip of `_*`). |
 | `.univignore` | Universal-variable names/patterns wrangle never asks about. | `_*` (fish/plugin internal state) — already auto-skipped, so this is mainly for one-off vars. |
-| `.merge-skip` | Items `wrangle merge` silently skips. Format: `<domain> <item>` (domain ∈ dotfile/brew/fisher/univ). Populated by the `[f]orever` prompt action. Bypass for one run with `wrangle merge <branch> --force`. | `brew brew "mergiraf"`, `fisher PatrickF1/fzf.fish`, etc. |
+| `.merge-skip` | Items `wrangle merge` silently skips. Format: `<domain> <item>` (domain ∈ dotfile/brew/fisher/univ). Populated by the `skip [f]orever` prompt action. Bypass for one run with `wrangle merge <branch> --force`. | `brew brew "mergiraf"`, `fisher PatrickF1/fzf.fish`, etc. |
 
 All four can be edited by hand. Wrangle also writes to them when you answer `[t]rack` or `[i]gnore forever` during a sync, so you usually don't have to.
 
