@@ -1,0 +1,12 @@
+# Items skipped during `wrangle merge` via the [f]orever prompt action.
+# wrangle merge silently skips entries listed here. Bypass with --force.
+#
+# Format: <domain> <item>
+#   domain ∈ { dotfile, brew, fisher, univ }
+#   item is the literal value the merge handler would compare:
+#     dotfile → path under home/ (e.g. home/.config/zed/settings.json)
+#     brew    → the full Brewfile line (e.g. brew "mergiraf")
+#     fisher  → the plugin identifier (e.g. PatrickF1/fzf.fish)
+#     univ    → the .univexport pattern (e.g. tide_*)
+#
+# Comments (#) and blank lines are ignored.
