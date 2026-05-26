@@ -95,6 +95,16 @@ thv run <server-image>
 
 See `thv --help` for available subcommands. Servers run as isolated containers; Rancher Desktop (or another OCI runtime) must be running.
 
+## Mergiraf (syntax-aware merge driver)
+
+`mergiraf` is a syntax-aware git merge driver for languages like Scala, Java, JSON, and others. After install, register it with git:
+
+```fish
+mergiraf install --global
+```
+
+This adds the driver config to `~/.gitconfig` and sets up `.gitattributes` patterns. After that, git will automatically use mergiraf when merging supported file types instead of the default line-based driver.
+
 ## Fisher plugins
 
 `fish_plugins` (tracked in the repo, symlinked into `~/.config/fish/`) lists `jorgebucaran/fisher` itself plus `fzf.fish`, `autopair.fish`, and `sponge`. Bootstrap installs fisher but doesn't auto-install the plugins. One-liner:
