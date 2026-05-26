@@ -182,3 +182,75 @@ string match -q "*matches .brewignore*" -- "$out6"
 not grep -q 'mergiraf' $fix6/Brewfile
 @test "after merge: Brewfile does NOT contain mergiraf (ignored)" $status -eq 0
 rm -rf $fix6 $home6
+
+# ─── [f]orever round-trip: write .merge-skip, second run auto-skips, --force re-prompts
+
+set -l f7 (_wrangle_merge_fixture)
+set -l fix7 $f7[1]; set -l home7 $f7[2]
+
+# Stubs for adopt side-effects (in case the user picks 'a' for non-mergiraf prompts).
+set -l stubdir7 (mktemp -d)
+for cmd in brew stow
+    echo '#!/bin/sh' > $stubdir7/$cmd
+    echo 'exit 0' >> $stubdir7/$cmd
+    chmod +x $stubdir7/$cmd
+end
+
+# First run: 'f' for the dotfile (zed/settings.json), 'f' for mergiraf,
+# 's' for the fisher plugin. The dotfile prompt comes first (Domain 1),
+# then brew (Domain 2), then fisher (Domain 3).
+begin
+    set -lx HOME $home7
+    set -lx PATH $stubdir7 $PATH
+    printf 'f\nf\ns\n' | $fix7/scripts/wrangle merge work >$home7/merge1.log 2>&1
+end
+
+# .merge-skip should now have two entries: one dotfile, one brew.
+test -f $fix7/.merge-skip
+@test "[f]orever: .merge-skip file is created" $status -eq 0
+
+grep -qE '^dotfile home/\.config/zed/settings\.json$' $fix7/.merge-skip
+@test "[f]orever: dotfile entry written to .merge-skip" $status -eq 0
+
+grep -qE '^brew brew "mergiraf"$' $fix7/.merge-skip
+@test "[f]orever: brew entry written to .merge-skip" $status -eq 0
+
+# fisher entry was skipped (not [f]orever'd), so should NOT be in .merge-skip.
+not grep -qE '^fisher ' $fix7/.merge-skip
+@test "[f]orever: skipped (not [f]orevered) item is NOT in .merge-skip" $status -eq 0
+
+# Second run: same fixture state. The dotfile + brew should auto-skip
+# (matches .merge-skip). Only the fisher prompt fires — pipe one 's'.
+begin
+    set -lx HOME $home7
+    set -lx PATH $stubdir7 $PATH
+    printf 's\n' | $fix7/scripts/wrangle merge work >$home7/merge2.log 2>&1
+end
+
+grep -q 'matches .merge-skip' $home7/merge2.log
+@test "[f]orever second run: 'matches .merge-skip' info message appears" $status -eq 0
+
+not grep -q '(new from source)' $home7/merge2.log
+@test "[f]orever second run: dotfile prompt does NOT re-surface" $status -eq 0
+
+grep -q 'PatrickF1/fzf.fish' $home7/merge2.log
+@test "[f]orever second run: fisher (non-skipped) still surfaces" $status -eq 0
+
+# Third run with --force: .merge-skip is bypassed. All three prompts re-fire.
+# Pipe 's\ns\ns\n' (skip everything to keep state clean).
+begin
+    set -lx HOME $home7
+    set -lx PATH $stubdir7 $PATH
+    printf 's\ns\ns\n' | $fix7/scripts/wrangle merge work --force >$home7/merge3.log 2>&1
+end
+
+grep -q '(new from source)' $home7/merge3.log
+@test "[f]orever + --force: dotfile prompt re-surfaces" $status -eq 0
+
+grep -q 'mergiraf' $home7/merge3.log
+@test "[f]orever + --force: brew prompt re-surfaces" $status -eq 0
+
+not grep -q 'matches .merge-skip' $home7/merge3.log
+@test "[f]orever + --force: no 'matches .merge-skip' info (bypassed)" $status -eq 0
+
+rm -rf $fix7 $home7 $stubdir7
