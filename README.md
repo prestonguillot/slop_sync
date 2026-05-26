@@ -20,7 +20,7 @@ Wrangle is a fish script that turns "the current state of my machine" into somet
   - **Fisher plugins** go into `fish_plugins`. Wrangle calls `fisher install` / `fisher remove` itself when you accept an install/uninstall prompt.
   - **Fish universal variables** (the ones plugins like tide use for config) get captured into a sourceable file at `home/.config/fish/exported-univ-vars.fish`. `wrangle sync` handles replay automatically: on a new machine, missing tracked vars are applied silently the first time you sync; if a tracked var's live value differs from the repo's, sync prompts per-var.
 
-- The whole repo is a **git repo with a branch per machine**. Wrangle's commits go to your machine's branch; framework changes (the wrangle script itself, etc.) live on `main`. Machine-branches are peers, not a hierarchy — they diverge freely after init. Framework updates flow `main → your machine-branch` via `wrangle update`; cross-machine personal-layer content moves explicitly via `wrangle merge <branch>`. The `wrangle sync` / `update` / `merge` / `push` subcommands wrap the git-side mechanics so you rarely touch git directly.
+- The whole repo is a **git repo with a branch per machine**. Wrangle's commits go to your machine's branch; framework changes (the wrangle script itself, etc.) live on `main`. Each machine-branch is independent and diverges freely from the others after init. Framework updates flow `main → your machine-branch` via `wrangle update`; cross-machine personal-layer content moves explicitly via `wrangle merge <branch>`. The `wrangle sync` / `update` / `merge` / `push` subcommands wrap the git-side mechanics so you rarely touch git directly.
 
 - Every commit goes through a **pre-commit regex secret-scan** that catches the obvious shapes (AWS / GitHub / Slack / Stripe / OpenAI / Anthropic / Google API keys, JWTs, PEM / OpenSSH / PGP private-key blocks). On a hit wrangle refuses to commit unless you set `WRANGLE_ALLOW_SECRETS=1`.
 
@@ -60,7 +60,7 @@ After bootstrap:
 
 - **You install a new tool / edit a dotfile / install a fisher plugin.** Wrangle doesn't watch for changes — it's pull-based.
 - **You run `wrangle sync` whenever you want to capture what's drifted.** It walks each domain (dotfiles, fisher, universals, brew), prompts per-item, makes the chosen edits, commits, and offers to push.
-- **You run `wrangle update` when a framework release ships.** It fetches origin and merges `origin/main` into your current machine-branch. Single merge — no chain.
+- **You run `wrangle update` when a framework release ships.** It fetches origin and merges `origin/main` into your current machine-branch.
 - **You run `wrangle merge <branch>` when you want to pull specific content from another of your machines** (e.g. you installed `mergiraf` on the work box and want it on the laptop too). Per-item prompts — you decide what comes across.
 - **You run `wrangle push` when the shell-start nag tells you have unpushed commits** — usually because you said `[N]o` to the push prompt at the end of a sync.
 
@@ -73,7 +73,7 @@ Three nags fire on shell start to keep you honest: staleness (haven't run wrangl
 Domain-specific bits:
 
 - **Dotfiles**: wrangle walks top-level `~/.<name>` files and `~/.config/*` entries. For each untracked entry on the machine, you get `[t]rack` (mv into `home/`, symlink back), `[i]gnore forever` (append to `.dotignore`), `[s]kip`, or `[q]uit`. The other direction (file in `home/` but missing from `~`) splits into two cases: if you previously had it and deleted it, you get a yoink prompt asking whether to remove it from the repo or restore via stow; if it's genuinely new (e.g. arrived in a pulled commit), stow symlinks it into `~` silently.
-- **Fisher plugins**: compares `fisher list` against the tracked `fish_plugins` file, filtering both sides through `.fisherignore`. Plugins installed but not tracked → `[t]rack` / `[i]gnore` (appends to `.fisherignore`, leaves the plugin installed) / `[s]kip`. Plugins tracked but not installed → `[i]nstall` / `[r]emove from fish_plugins` / `[s]kip`. Wrangle never prompts to uninstall — if you want a plugin gone, run `fisher remove` directly.
+- **Fisher plugins**: compares `fisher list` against the tracked `fish_plugins` file, filtering both sides through `.fisherignore`. Plugins installed but not tracked → `[t]rack` / `[i]gnore` (appends to `.fisherignore`, leaves the plugin installed) / `[s]kip`. Plugins tracked but not installed → `[i]nstall` / `[r]emove from fish_plugins` / `[s]kip`. To uninstall a plugin, run `fisher remove` directly.
 - **Fish universals**: two sub-passes, matching the two-direction shape of the fisher and brew passes. **Capture**: collects current universals (`set -U -L`), auto-skips anything starting with `_` (fish + plugin internal convention), groups the rest by prefix. For each new prefix group, offers to track the pattern (e.g. `tide_*`) into `.univexport`, ignore forever into `.univignore`, or skip. Tracked vars get regenerated into `home/.config/fish/exported-univ-vars.fish`. **Import**: parses that same file for tracked names + values, compares to your live shell. Missing-on-machine → silent apply (matching how stow silently symlinks newly-tracked dotfiles). Different value live vs repo → prompts `[a]pply repo value / [k]eep local / [s]kip / [q]uit`. No `[k]eep local forever` memory needed — the capture sub-pass that follows regenerates the file with whatever's live, so the conflict one-shots itself.
 - **Brew**: calls `dump-brewfile` (a thin wrapper around `brew bundle dump --describe --force`, filtered through `.brewignore`) and diffs the result against your tracked `Brewfile`. When something's installed locally but missing from the Brewfile, wrangle asks whether to track it, add a `.brewignore` substring so it stops nagging, or skip. When something's in the Brewfile but not installed locally, it asks whether to install it, drop it from the Brewfile, or skip.
 
@@ -90,17 +90,15 @@ main                     framework — shared, semver-tagged
   └─ workshop            your shop machine  (owns its own state)
 ```
 
-No hierarchy among machine-branches — they're siblings, not a chain.
-
 One git config key controls this, per-clone (not pushed):
 
 - `wrangle.machine-branch <name>` — which branch this clone commits to. Defaults to `personal` if unset. Bootstrap sets it explicitly on first run.
 
-**`wrangle update`** fetches origin and merges `origin/main` into the current machine-branch. Single edge — no chain. On merge conflict it stops, prints what to resolve; resolve manually (`git add` + `git commit`), then re-run.
+**`wrangle update`** fetches origin and merges `origin/main` into the current machine-branch. On merge conflict it stops, prints what to resolve; resolve manually (`git add` + `git commit`), then re-run.
 
 **`wrangle merge <branch>`** brings personal-layer content from another machine-branch into the current one. Walks dotfiles + Brewfile + fish_plugins + univ-vars, comparing the source branch's tracked state to the current branch's. For each item the source has and you don't (or have differently), it prompts: `[a]dopt` source's version, `skip [f]orever` (never adopt this in any future merge — appends to `.merge-skip`), `[k]eep mine` (on conflict only), `[d]iff` (on conflict only), `[s]kip` (this run only), `[q]uit`. Items matching the current branch's `.ignore` files OR `.merge-skip` are skipped with a one-line note. `wrangle merge <branch> --force` bypasses `.merge-skip` so previously-`skip [f]orever`ed items re-surface.
 
-`wrangle merge` is **add-only**: items YOU have that the source doesn't are left alone. To stop tracking something, use the existing `[i]gnore` flow on your machine. Framework files (`scripts/`, `README.md`, etc.) are never touched — those go via PR → `main` → `wrangle update`.
+`wrangle merge` is **add-only**: items YOU have that the source doesn't are left alone. To stop tracking something, use the existing `[i]gnore` flow on your machine. Framework files (`scripts/`, `README.md`, etc.) only change through the framework path: PR → `main` → `wrangle update`.
 
 On a new machine, `bootstrap` initializes the machine-branch from `main` by default. Optionally you can seed it from another existing machine-branch (one-time copy of starting state); the new branch then diverges freely from that point.
 
@@ -144,8 +142,8 @@ Things that aren't on `main` (they're personal-layer, on your machine-branch): `
 | Subcommand | What it does |
 |---|---|
 | `wrangle sync` | The main workflow. Detect drift across all domains, prompt per item, commit, push. Accepts `--dry-run`, `--force`, `--verbose` (surface silent skiplist matches), `--with-claude` / `--suppress-claude`, `--no-branch-switch`. |
-| `wrangle update` | Fetch origin and merge `origin/main` into the current machine-branch (framework updates). Single edge — no chain. On merge conflict, resolve manually + re-run. |
-| `wrangle merge <branch>` | Per-item adoption of personal-layer content from another machine-branch. Walks dotfiles + Brewfile + fish_plugins + univ-vars; prompts `[a]dopt / [k]eep mine / [d]iff / [s]kip / [q]uit` per item. Add-only; honors `.ignore` files; never touches framework. |
+| `wrangle update` | Fetch origin and merge `origin/main` into the current machine-branch (framework updates). On merge conflict, resolve manually + re-run. |
+| `wrangle merge <branch>` | Per-item adoption of personal-layer content from another machine-branch. Walks dotfiles + Brewfile + fish_plugins + univ-vars; prompts `[a]dopt / [k]eep mine / [d]iff / [s]kip / [q]uit` per item. Add-only; honors `.ignore` files; scoped to personal-layer content. |
 | `wrangle push` | Push the current branch to origin, with a preview of what's about to ship. No prompt — typing the subcommand is the decision. |
 | `wrangle review-docs` | Skip drift; have claude review the repo's docs against recent commits. |
 
