@@ -143,7 +143,7 @@ Things that aren't on `main` (they're personal-layer, on your machine-branch): `
 
 | Subcommand | What it does |
 |---|---|
-| `wrangle sync` | The main workflow. Detect drift across all domains, prompt per item, commit, push. Accepts `--dry-run`, `--force`, `--with-claude` / `--suppress-claude`, `--no-branch-switch`. |
+| `wrangle sync` | The main workflow. Detect drift across all domains, prompt per item, commit, push. Accepts `--dry-run`, `--force`, `--verbose` (surface silent skiplist matches), `--with-claude` / `--suppress-claude`, `--no-branch-switch`. |
 | `wrangle update` | Fetch origin and merge `origin/main` into the current machine-branch (framework updates). Single edge — no chain. On merge conflict, resolve manually + re-run. |
 | `wrangle merge <branch>` | Per-item adoption of personal-layer content from another machine-branch. Walks dotfiles + Brewfile + fish_plugins + univ-vars; prompts `[a]dopt / [k]eep mine / [d]iff / [s]kip / [q]uit` per item. Add-only; honors `.ignore` files; never touches framework. |
 | `wrangle push` | Push the current branch to origin, with a preview of what's about to ship. No prompt — typing the subcommand is the decision. |
