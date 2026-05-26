@@ -1,0 +1,173 @@
+# `wrangle merge <branch>` behavior tests. Build a hermetic fixture repo
+# with two branches whose tracked content diverges, then exercise the
+# merge operation by piping answers into wrangle's interactive prompts.
+#
+# Hermeticity: same pattern as test/wrangle-behavior.fish — copy scripts/
+# into a fresh `git init`ed fixture and run THAT copy with a fake HOME so
+# both the repo and state files are isolated from the developer's tree.
+
+set -l repo_root (dirname (realpath (status -f)))/..
+
+# Build a fixture with two branches:
+#   personal: minimal seed (empty Brewfile, empty fish_plugins, no dotfiles)
+#   work:     personal + extra brew, extra fisher plugin, extra dotfile
+# Echoes two paths on stdout: fixture repo, then fake home. Starts on
+# `personal` (the default machine-branch).
+function _wrangle_merge_fixture --inherit-variable repo_root
+    set -l fix (mktemp -d)
+    set -l home_dir (mktemp -d)
+
+    git -C $fix init -q -b main
+    git -C $fix config user.email test@test.local
+    git -C $fix config user.name "merge-test"
+
+    mkdir -p $fix/scripts $fix/home/.config/fish/conf.d
+    cp $repo_root/scripts/wrangle $fix/scripts/
+    cp $repo_root/scripts/_skiplist.fish $fix/scripts/
+    cp $repo_root/scripts/_univ_parse.fish $fix/scripts/
+    cp $repo_root/scripts/_univ_helpers.fish $fix/scripts/
+    cp $repo_root/scripts/_commit_msg.fish $fix/scripts/
+    cp $repo_root/scripts/scan-secrets $fix/scripts/
+    cp $repo_root/scripts/dump-brewfile $fix/scripts/
+
+    # Minimal seed on what becomes main.
+    touch $fix/.dotignore $fix/.brewignore $fix/.fisherignore $fix/.univexport $fix/.univignore
+    touch $fix/Brewfile $fix/home/.config/fish/fish_plugins $fix/home/.config/fish/conf.d/.gitkeep
+
+    git -C $fix add -A
+    git -C $fix commit -q -m "seed"
+
+    # `personal` branch: identical to main (no extra content yet).
+    git -C $fix checkout -q -b personal
+    git -C $fix commit -q --allow-empty -m "personal: init"
+
+    # `work` branch: has extra brew + fisher plugin + dotfile that personal lacks.
+    git -C $fix checkout -q -b work main
+    echo 'brew "mergiraf"' >> $fix/Brewfile
+    echo 'PatrickF1/fzf.fish' >> $fix/home/.config/fish/fish_plugins
+    mkdir -p $fix/home/.config/zed
+    echo '{"theme": "ayu-dark"}' > $fix/home/.config/zed/settings.json
+    git -C $fix add -A
+    git -C $fix commit -q -m "work: add mergiraf + fzf.fish + zed settings"
+
+    # End on personal — the merge source will be work.
+    git -C $fix checkout -q personal
+
+    echo $fix
+    echo $home_dir
+end
+
+# ─── unknown source branch exits non-zero ──────────────────────────────
+
+set -l f1 (_wrangle_merge_fixture)
+set -l fix1 $f1[1]; set -l home1 $f1[2]
+env HOME=$home1 $fix1/scripts/wrangle merge nonexistent-branch 2>/dev/null
+@test "merge with unknown source branch exits non-zero" $status -ne 0
+rm -rf $fix1 $home1
+
+# ─── merging from main is rejected (use update instead) ────────────────
+
+set -l f2 (_wrangle_merge_fixture)
+set -l fix2 $f2[1]; set -l home2 $f2[2]
+set -l out2 (env HOME=$home2 $fix2/scripts/wrangle merge main 2>&1)
+string match -q "*update*" -- "$out2"
+@test "merge main hints at `wrangle update`" $status -eq 0
+rm -rf $fix2 $home2
+
+# ─── merging into self is rejected ─────────────────────────────────────
+
+set -l f3 (_wrangle_merge_fixture)
+set -l fix3 $f3[1]; set -l home3 $f3[2]
+env HOME=$home3 $fix3/scripts/wrangle merge personal 2>/dev/null
+@test "merge personal (self) exits non-zero" $status -ne 0
+rm -rf $fix3 $home3
+
+# ─── adopting all from work: piped 'a' answers (4 prompts: 1 dotfile, 1
+#     brew, 1 fisher, 0 univ-var) → all adopted, Brewfile/fish_plugins/
+#     home/.config/zed/settings.json land on personal, commit lands.
+
+set -l f4 (_wrangle_merge_fixture)
+set -l fix4 $f4[1]; set -l home4 $f4[2]
+
+# Stub out external tools that wrangle would invoke as side-effects of adoption:
+#   brew bundle (would actually install mergiraf)
+#   fisher install (would actually fetch the plugin)
+#   stow         (would symlink things into ~)
+# Make stubs in a directory we prepend to PATH.
+set -l stubdir (mktemp -d)
+for cmd in brew stow
+    echo '#!/bin/sh' > $stubdir/$cmd
+    echo 'exit 0' >> $stubdir/$cmd
+    chmod +x $stubdir/$cmd
+end
+# fish-level stub for `fisher` (it's a fish function in real life).
+# We can't easily stub fish builtins; rely on `functions -q fisher` being
+# false inside the test shell (no fisher loaded), which our merge code
+# already guards against (`if functions -q fisher`).
+
+# Three prompts, all adopting: 'a' for dotfile, 'a' for brew, 'a' for fisher.
+# No univ-var drift (both branches have empty .univexport).
+set -l merge_rv
+begin
+    set -lx HOME $home4
+    set -lx PATH $stubdir $PATH
+    printf 'a\na\na\n' | $fix4/scripts/wrangle merge work >$home4/merge.log 2>&1
+    set merge_rv $status
+end
+@test "merge work (all adopted) exits 0" $merge_rv -eq 0
+
+# Verify the changes landed on personal: Brewfile has mergiraf, fish_plugins
+# has fzf.fish, zed/settings.json exists.
+grep -q 'mergiraf' $fix4/Brewfile
+@test "after merge: Brewfile contains mergiraf" $status -eq 0
+
+grep -q 'fzf.fish' $fix4/home/.config/fish/fish_plugins
+@test "after merge: fish_plugins contains fzf.fish" $status -eq 0
+
+test -f $fix4/home/.config/zed/settings.json
+@test "after merge: home/.config/zed/settings.json exists on personal" $status -eq 0
+
+# Commit was made.
+set -l last_msg (git -C $fix4 log -1 --pretty=%s personal)
+string match -q "*merge from*work*" -- "$last_msg"
+@test "after merge: commit subject mentions 'merge from ... work'" $status -eq 0
+
+rm -rf $fix4 $home4 $stubdir
+
+# ─── skipping everything: piped 's' answers → no adoptions, no commit ──
+
+set -l f5 (_wrangle_merge_fixture)
+set -l fix5 $f5[1]; set -l home5 $f5[2]
+set -l before_head (git -C $fix5 rev-parse personal)
+set -l skip_rv
+begin
+    set -lx HOME $home5
+    printf 's\ns\ns\n' | $fix5/scripts/wrangle merge work >$home5/merge.log 2>&1
+    set skip_rv $status
+end
+@test "merge work (all skipped) exits 0" $skip_rv -eq 0
+set -l after_head (git -C $fix5 rev-parse personal)
+test "$before_head" = "$after_head"
+@test "after all-skip merge: no commit on personal" $status -eq 0
+rm -rf $fix5 $home5
+
+# ─── ignore-file honored: brewignore entry suppresses prompt for that brew
+
+set -l f6 (_wrangle_merge_fixture)
+set -l fix6 $f6[1]; set -l home6 $f6[2]
+# Add mergiraf to personal's .brewignore (substring match), commit it.
+echo 'mergiraf' >> $fix6/.brewignore
+git -C $fix6 commit -q -am 'personal: brewignore mergiraf'
+# Now merging work should auto-skip the mergiraf brew prompt with an info
+# message. The fisher and dotfile prompts still fire — pipe 'a' for each.
+set -l out6
+begin
+    set -lx HOME $home6
+    set out6 (printf 'a\na\n' | $fix6/scripts/wrangle merge work 2>&1)
+end
+string match -q "*matches .brewignore*" -- "$out6"
+@test "merge work: brewignore entry produces 'matches .brewignore' info" $status -eq 0
+# Brewfile on personal should NOT have mergiraf.
+not grep -q 'mergiraf' $fix6/Brewfile
+@test "after merge: Brewfile does NOT contain mergiraf (ignored)" $status -eq 0
+rm -rf $fix6 $home6
