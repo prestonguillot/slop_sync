@@ -792,7 +792,14 @@ if test "$_subcmd" = merge
 
     # ── Domain 1: dotfiles ──────────────────────────────────────────────
     _subheader "Dotfiles"
-    set -l src_dotfiles (git ls-tree -r $source --name-only -- home/ 2>/dev/null | grep -v '/\.gitkeep$')
+    # Skip:
+    #   - .gitkeep (placeholder for empty tracked dirs)
+    #   - home/.config/fish/fish_plugins (own domain — fisher prompt below handles it)
+    #   - home/.config/fish/exported-univ-vars.fish (own domain — univ-var prompt below)
+    #   - home/.config/fish/conf.d/wrangle_integration.fish (framework — flows via
+    #     `wrangle update`, not `wrangle merge`)
+    set -l src_dotfiles (git ls-tree -r $source --name-only -- home/ 2>/dev/null \
+        | grep -vE '/\.gitkeep$|^home/\.config/fish/fish_plugins$|^home/\.config/fish/exported-univ-vars\.fish$|^home/\.config/fish/conf\.d/wrangle_integration\.fish$')
     set -l dot_total 0
     for path in $src_dotfiles
         set -l rel (string replace -- 'home/' '' $path)
@@ -899,10 +906,14 @@ if test "$_subcmd" = merge
             switch $choice
                 case a A adopt
                     echo $line >> $repo/Brewfile
-                    # Best-effort brew install: extract the quoted package name.
-                    set -l pkg (string match -r '"([^"]+)"' -- $line)[2]
-                    if test -n "$pkg"
-                        _with_spinner "brew bundle for $pkg…" brew bundle --no-lock --file=(echo $line | psub)
+                    # Best-effort install via brew bundle install with a one-line
+                    # file (psub turns the echo into a temp file path). Handles
+                    # brew/cask/mas/tap/vscode/etc. without parsing line type.
+                    _with_spinner "brew bundle install for $line…" brew bundle install --file=(echo $line | psub)
+                    set -l install_rv $status
+                    if test $install_rv -ne 0
+                        echo "      $GLYPH_WARN brew bundle install failed (exit $install_rv)"
+                        echo "      $GLYPH_DIM the Brewfile entry was appended; run `brew bundle install` to retry"
                     end
                     set _merge_brew_adopted (math $_merge_brew_adopted + 1)
                     _log_change "adopted brew from $source: $line"
