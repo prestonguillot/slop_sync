@@ -120,3 +120,5 @@ cask "git-credential-manager"
 # Kubernetes and container management on the desktop
 cask "rancher"
 mas "Okta Verify", id: 490179405
+# Syntax-aware git merge driver
+brew "mergiraf"
