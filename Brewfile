@@ -66,10 +66,6 @@ cask "betterdisplay"
 cask "bruno"
 # Terminal-based AI coding assistant
 cask "claude-code"
-# Voice and text chat software
-cask "discord"
-# Web browser
-cask "firefox"
 cask "font-hack"
 cask "font-monaspace"
 # Terminal emulator that uses platform-native UI and GPU acceleration
@@ -88,11 +84,46 @@ cask "obsidian"
 cask "raycast"
 # Music streaming service
 cask "spotify"
-# Native desktop client for WhatsApp
-cask "whatsapp"
 # Network protocol analyzer
 cask "wireshark-app"
 # Multiplayer code editor
 cask "zed"
-mas "Fantastical", id: 975937182
 cask "font-symbols-only-nerd-font"
+# Official Amazon AWS command-line interface
+brew "awscli"
+# Kubernetes command-line interface
+brew "kubernetes-cli"
+# Scala language server
+brew "metals"
+# Interpreted, interactive, object-oriented programming language
+brew "python@3.13"
+# Project documentation with Markdown
+brew "mkdocs"
+# Open source relational database management system
+brew "mysql-client"
+# Command-line interface for New Relic
+brew "newrelic-cli"
+# PDF rendering library (based on the xpdf-3.0 code base)
+brew "poppler"
+# Official tldr client written in Rust
+brew "tlrc"
+# Language for application scale JavaScript development
+brew "typescript"
+# Feature-rich interactive Jira command-line
+brew "ankitpokhrel/jira-cli/jira-cli"
+# ck-mcp-wrapper is a small cli tool that wraps local stdio mcp servers, providing OTEL metrics
+brew "ck-private/tap/ck-mcp-wrapper"
+# ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers
+brew "stacklok/tap/thv"
+# Calendar software
+cask "fantastical"
+# Web browser
+cask "firefox@developer-edition"
+# Set of tools to manage resources and applications hosted on Google Cloud
+cask "gcloud-cli"
+# Cross-platform Git credential storage for multiple hosting providers
+cask "git-credential-manager"
+# Kubernetes and container management on the desktop
+cask "rancher"
+mas "Okta Verify", id: 490179405
+npm "@zed-industries/claude-code-acp"
