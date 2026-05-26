@@ -10,7 +10,7 @@ Wrangle is a fish script that turns "the current state of my machine" into somet
 
 - Each run, wrangle walks your live machine and compares it against the tracked state. Drift goes both ways, and the prompts differ depending on which direction is out of sync:
   - **The machine has something the repo doesn't** (you installed a brew, added a fisher plugin, dropped a new dotfile in `~/.config/`) → wrangle prompts per item: `[t]rack` it into the repo, `[i]gnore forever`, or `[s]kip` for now.
-  - **The repo has something the machine doesn't yet** (another of your machines tracked it, you `wrangle pull`ed it down, and it's not present locally) → for fisher and brew, wrangle prompts per item: `[i]nstall` it or `[r]emove` it from the tracked list. For dotfiles, no prompt — stow symlinks newly-tracked files into `~` automatically. The one case that *does* halt is a conflict: a tracked dotfile whose target path already has a real (non-symlink) file with different contents. Stow refuses to clobber, wrangle reports the conflict, and you resolve it by hand (typically: diff, move your local copy aside, re-run — or accept the local copy and re-track it).
+  - **The repo has something the machine doesn't yet** (you ran `wrangle update` to bring `origin/main` down, or `wrangle merge <branch>` to adopt content from another of your machines) → for fisher and brew, wrangle prompts per item: `[i]nstall` it or `[r]emove` it from the tracked list. For dotfiles, no prompt — stow symlinks newly-tracked files into `~` automatically. The one case that *does* halt is a conflict: a tracked dotfile whose target path already has a real (non-symlink) file with different contents. Stow refuses to clobber, wrangle reports the conflict, and you resolve it by hand (typically: diff, move your local copy aside, re-run — or accept the local copy and re-track it).
   
   Once an already-tracked dotfile is symlinked, "conflicting contents" can't happen — `~/.config/foo` and `home/.config/foo` are the same inode, so editing either is editing both. Conflicts only arise the first time a tracked file lands on a machine that already had its own version.
 
@@ -20,7 +20,7 @@ Wrangle is a fish script that turns "the current state of my machine" into somet
   - **Fisher plugins** go into `fish_plugins`. Wrangle calls `fisher install` / `fisher remove` itself when you accept an install/uninstall prompt.
   - **Fish universal variables** (the ones plugins like tide use for config) get captured into a sourceable file at `home/.config/fish/exported-univ-vars.fish`. `wrangle sync` handles replay automatically: on a new machine, missing tracked vars are applied silently the first time you sync; if a tracked var's live value differs from the repo's, sync prompts per-var.
 
-- The whole repo is a **git repo with a branch per machine**. Wrangle's commits go to your machine's branch; framework changes (the wrangle script itself, etc.) live on `main`. Branches declare a parent so updates flow downstream — your laptop branches off `main`, your work machine can branch off your laptop, etc. The `wrangle pull` / `sync` / `push` subcommands wrap the git-side mechanics so you rarely touch git directly.
+- The whole repo is a **git repo with a branch per machine**. Wrangle's commits go to your machine's branch; framework changes (the wrangle script itself, etc.) live on `main`. Machine-branches are peers, not a hierarchy — they diverge freely after init. Framework updates flow `main → your machine-branch` via `wrangle update`; cross-machine personal-layer content moves explicitly via `wrangle merge <branch>`. The `wrangle sync` / `update` / `merge` / `push` subcommands wrap the git-side mechanics so you rarely touch git directly.
 
 - Every commit goes through a **pre-commit regex secret-scan** that catches the obvious shapes (AWS / GitHub / Slack / Stripe / OpenAI / Anthropic / Google API keys, JWTs, PEM / OpenSSH / PGP private-key blocks). On a hit wrangle refuses to commit unless you set `WRANGLE_ALLOW_SECRETS=1`.
 
@@ -29,7 +29,7 @@ Wrangle is a fish script that turns "the current state of my machine" into somet
 Day-to-day there are three subcommands that matter:
 
 - `wrangle sync` — the main one: detect drift, ask per-item, commit, optionally push.
-- `wrangle pull` — bring framework updates (or upstream parent-branch changes) down.
+- `wrangle update` — bring framework updates from `main` into your machine-branch.
 - `wrangle push` — push your current branch's commits.
 
 `wrangle help` lists the rest.
@@ -60,7 +60,8 @@ After bootstrap:
 
 - **You install a new tool / edit a dotfile / install a fisher plugin.** Wrangle doesn't watch for changes — it's pull-based.
 - **You run `wrangle sync` whenever you want to capture what's drifted.** It walks each domain (dotfiles, fisher, universals, brew), prompts per-item, makes the chosen edits, commits, and offers to push.
-- **You run `wrangle pull` when a framework release ships** (or another machine of yours has pushed changes to a branch yours is based on). It fetches origin and merges parent-branches into yours along the chain.
+- **You run `wrangle update` when a framework release ships.** It fetches origin and merges `origin/main` into your current machine-branch. Single merge — no chain.
+- **You run `wrangle merge <branch>` when you want to pull specific content from another of your machines** (e.g. you installed `mergiraf` on the work box and want it on the laptop too). Per-item prompts — you decide what comes across.
 - **You run `wrangle push` when the shell-start nag tells you have unpushed commits** — usually because you said `[N]o` to the push prompt at the end of a sync.
 
 Three nags fire on shell start to keep you honest: staleness (haven't run wrangle in a week), unpushed (you have local commits not on origin), and pull-pending (origin has commits you haven't merged down). All three are colorized and prefixed with `wrangle:` and each one suggests the exact subcommand that resolves it.
@@ -80,25 +81,28 @@ Wrangle also catches files that are tracked but have uncommitted changes (e.g. y
 
 ## Branch model
 
-Each machine commits to its own branch and declares a parent. Framework changes (the wrangle script itself, etc.) live on `main`. Your machine's branch (default name `personal`) declares `main` as its parent. If you want a second machine that builds on the first, give it its own branch that declares `personal` as its parent — and so on for arbitrary depth.
+Machines are peers. Each owns one branch (the "machine-branch") and commits to it. Framework changes (the wrangle script itself, etc.) live on `main` and flow down to machine-branches via `wrangle update`. Personal-layer content (Brewfile entries, dotfiles, plugins) is owned by whatever machine added it; cross-pollinating it between machines is an explicit per-item act via `wrangle merge <branch>`.
 
 ```
-main                     framework
-  └─ personal            your laptop (parent = main)
-       └─ work           your work machine (parent = personal)
-       └─ workshop       your shop machine (parent = personal)
+main                     framework — shared, semver-tagged
+  ├─ personal            your laptop  (owns its own state)
+  ├─ work                your work machine  (owns its own state)
+  └─ workshop            your shop machine  (owns its own state)
 ```
 
-Two git config keys control this, per-clone (not pushed):
+No hierarchy among machine-branches — they're siblings, not a chain.
 
-- `wrangle.machine-branch <name>` — which branch this clone commits to.
-- `branch.<name>.wrangle-parent <parent>` — that branch's parent in the chain.
+One git config key controls this, per-clone (not pushed):
 
-Both default sensibly: missing `wrangle.machine-branch` → `personal`; missing `branch.<X>.wrangle-parent` → `main`. Bootstrap sets them explicitly on first run.
+- `wrangle.machine-branch <name>` — which branch this clone commits to. Defaults to `personal` if unset. Bootstrap sets it explicitly on first run.
 
-`wrangle pull` walks the chain root-toward-leaf, fast-skipping any edge that's already up-to-date and real-merging the rest (with `--no-ff`, so the merge boundary stays visible in `git log`). On merge conflict it stops mid-cascade, prints what to resolve, and you continue with `wrangle pull --resume` after `git add` + `git commit`.
+**`wrangle update`** fetches origin and merges `origin/main` into the current machine-branch. Single edge — no chain. On merge conflict it stops, prints what to resolve; resolve manually (`git add` + `git commit`), then re-run.
 
-You declare a new branch's parent with `wrangle set-parent <parent>` (which is just a typed wrapper around `git config branch.<current>.wrangle-parent <parent>`).
+**`wrangle merge <branch>`** brings personal-layer content from another machine-branch into the current one. Walks dotfiles + Brewfile + fish_plugins + univ-vars, comparing the source branch's tracked state to the current branch's. For each item the source has and you don't (or have differently), it prompts: `[a]dopt` source's version, `[k]eep mine` (on conflict), `[d]iff`, `[s]kip`, `[q]uit`. Items matching the current branch's `.ignore` files are skipped with a one-line note — your existing "don't bother me about this" decisions are honored.
+
+`wrangle merge` is **add-only**: items YOU have that the source doesn't are left alone. To stop tracking something, use the existing `[i]gnore` flow on your machine. Framework files (`scripts/`, `README.md`, etc.) are never touched — those go via PR → `main` → `wrangle update`.
+
+On a new machine, `bootstrap` initializes the machine-branch from `main` by default. Optionally you can seed it from another existing machine-branch (one-time copy of starting state); the new branch then diverges freely from that point.
 
 ## Repo layout
 
@@ -139,10 +143,10 @@ Things that aren't on `main` (they're personal-layer, on your machine-branch): `
 | Subcommand | What it does |
 |---|---|
 | `wrangle sync` | The main workflow. Detect drift across all domains, prompt per item, commit, push. Accepts `--dry-run`, `--force`, `--with-claude` / `--suppress-claude`, `--no-branch-switch`. |
-| `wrangle pull` | Fetch origin + cascade-merge along the parent chain. Accepts `--resume` to continue after a conflict. |
+| `wrangle update` | Fetch origin and merge `origin/main` into the current machine-branch (framework updates). Single edge — no chain. On merge conflict, resolve manually + re-run. |
+| `wrangle merge <branch>` | Per-item adoption of personal-layer content from another machine-branch. Walks dotfiles + Brewfile + fish_plugins + univ-vars; prompts `[a]dopt / [k]eep mine / [d]iff / [s]kip / [q]uit` per item. Add-only; honors `.ignore` files; never touches framework. |
 | `wrangle push` | Push the current branch to origin, with a preview of what's about to ship. No prompt — typing the subcommand is the decision. |
 | `wrangle review-docs` | Skip drift; have claude review the repo's docs against recent commits. |
-| `wrangle set-parent <branch>` | Declare `<branch>` as the current branch's wrangle-parent (writes git config). |
 
 Bare `wrangle`, `wrangle -h`, and `wrangle --help` all print top-level help. There's no implicit-sync shortcut — type `wrangle sync` to sync.
 
@@ -164,14 +168,14 @@ The default `.dotignore` ships pre-populated with credential paths, key-file glo
 
 ## Shell integration
 
-Bootstrap stows one conf.d hook into your `~/.config/fish/conf.d/` (it's a symlink, so updates flow automatically through `wrangle pull`):
+Bootstrap stows one conf.d hook into your `~/.config/fish/conf.d/` (it's a symlink, so updates flow automatically through `wrangle update`):
 
 **`wrangle_integration.fish`** does four things on every interactive shell start:
 
 1. Adds `<repo>/scripts/` to `$PATH` so `wrangle` and friends are callable.
 2. **Staleness nag** if wrangle hasn't run in > 7 days. Suggests `wrangle sync`.
 3. **Unpushed nag** if your current branch has unpushed commits. Suggests `wrangle push`.
-4. **Pull nag** if origin has commits on any chain edge you haven't merged. Suggests `wrangle pull`. This one self-suppresses for already-seen upstream SHAs, so it only re-fires on genuinely new commits.
+4. **Update nag** if `origin/main` has commits not yet merged into the current machine-branch. Suggests `wrangle update`. Self-suppresses for already-seen `origin/main` SHAs, so it only re-fires on genuinely new commits.
 
 All three nags are colorized and prefixed with `wrangle:`. Each has a corresponding `WRANGLE_NO_*_NAG=1` env var to silence it (see [Env vars](#env-vars-and-git-config) below).
 
@@ -186,7 +190,7 @@ Env vars (set in `config.fish` for permanent effect):
 | `WRANGLE_NO_PUSH_NAG` | Silence the shell-start unpushed-commits nag. |
 | `WRANGLE_NO_PULL_NAG` | Silence the shell-start pull-pending nag. |
 | `WRANGLE_NO_STALENESS_NAG` | Silence the shell-start staleness nag. |
-| `WRANGLE_NO_BRANCH_SWITCH` | Skip the parent-chain pull at the start of `sync`. |
+| `WRANGLE_NO_BRANCH_SWITCH` | Skip the framework update at the start of `sync`. |
 | `WRANGLE_ALLOW_SECRETS` | Bypass `scan-secrets` at commit time (use only when you've verified the hits are test fixtures or false positives). |
 | `WRANGLE_CLAUDE_MODEL` | Override the claude model (default `sonnet`). |
 | `WRANGLE_CLAUDE_EFFORT` | Override claude effort: `low` (default) / `medium` / `high` / `xhigh` / `max`. |
@@ -196,15 +200,13 @@ Git config (per-clone, in `.git/config`):
 | Key | Default | Purpose |
 |---|---|---|
 | `wrangle.machine-branch` | `personal` | Which branch this clone commits to. |
-| `branch.<X>.wrangle-parent` | `main` (when `<X>` is not `main`) | What `<X>` merges from during `wrangle pull`. |
 
 Cache files at `~/.cache/dotfiles/` (nothing user-facing — documented here for the rare debug case):
 
 ```
 last-wrangle           timestamp of last successful sync (drives staleness nag)
 wrangle-config         "WRANGLE_CLAUDE_OPT_IN=yes" or =no, set by first-run question
-pull-cascade-state     set when a `wrangle pull` hits a conflict; consumed by `--resume`
-pull-nag-state         per-parent SHA last nagged about (deduplicates the pull nag)
+pull-nag-state         origin/main SHA last nagged about (deduplicates the update nag)
 ```
 
 ## Releasing framework updates (for maintainers)
@@ -224,7 +226,7 @@ When the PR is green and you merge it (rebase merge — main stays linear), `.gi
 
 PRs without a `release:*` label merge normally but don't bump the version — use that for changes that aren't user-visible (CI tweaks, README typos, etc.). To release after the fact, label another PR or run `scripts/bump-version` manually.
 
-Released framework updates flow into your machine-branch the next time you run `wrangle pull` (or `wrangle sync`, which starts with a pull). You don't manually merge main into anything.
+Released framework updates flow into your machine-branch the next time you run `wrangle update` (or `wrangle sync`, which starts with an update). You don't manually merge main into anything.
 
 ## Key principles
 

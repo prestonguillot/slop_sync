@@ -29,7 +29,7 @@ set -l dash_dash_help_help ($wrangle --help)
 test "$dash_dash_help_help" = "$top_help"
 @test "wrangle --help prints same output as `wrangle help`" $status -eq 0
 
-for subcmd in sync pull review-docs set-parent
+for subcmd in sync update merge review-docs
     string match -q "*$subcmd*" -- "$top_help"
     @test "top-level help lists subcommand: $subcmd" $status -eq 0
 end
@@ -43,7 +43,6 @@ string match -q "*WRANGLE_CLAUDE_MODEL*"    -- "$top_help"; @test "top-level hel
 string match -q "*WRANGLE_CLAUDE_EFFORT*"   -- "$top_help"; @test "top-level help mentions WRANGLE_CLAUDE_EFFORT" $status -eq 0
 
 string match -q "*wrangle.machine-branch*"  -- "$top_help"; @test "top-level help mentions wrangle.machine-branch git config" $status -eq 0
-string match -q "*wrangle-parent*"          -- "$top_help"; @test "top-level help mentions branch.<X>.wrangle-parent git config" $status -eq 0
 
 # ─── Per-subcommand --help ──────────────────────────────────────────────
 
@@ -54,15 +53,22 @@ string match -q "*--with-claude*"      -- "$sync_help"; @test "sync --help menti
 string match -q "*--suppress-claude*"  -- "$sync_help"; @test "sync --help mentions --suppress-claude" $status -eq 0
 string match -q "*--no-branch-switch*" -- "$sync_help"; @test "sync --help mentions --no-branch-switch" $status -eq 0
 
-set -l pull_help ($wrangle pull --help)
-string match -q "*--resume*" -- "$pull_help"; @test "pull --help mentions --resume" $status -eq 0
+set -l update_help ($wrangle update --help)
+string match -q "*origin/main*" -- "$update_help"; @test "update --help mentions origin/main" $status -eq 0
+
+set -l merge_help ($wrangle merge --help)
+string match -q "*<branch>*" -- "$merge_help"; @test "merge --help mentions <branch> arg" $status -eq 0
+string match -q "*Add-only*" -- "$merge_help"; @test "merge --help mentions add-only semantics" $status -eq 0
 
 # `wrangle help <subcmd>` works the same as `wrangle <subcmd> --help`.
 set -l help_sync ($wrangle help sync)
 string match -q "*--dry-run*" -- "$help_sync"; @test "help sync mentions --dry-run" $status -eq 0
 
-set -l help_pull ($wrangle help pull)
-string match -q "*--resume*" -- "$help_pull"; @test "help pull mentions --resume" $status -eq 0
+set -l help_update ($wrangle help update)
+string match -q "*origin/main*" -- "$help_update"; @test "help update mentions origin/main" $status -eq 0
+
+set -l help_merge ($wrangle help merge)
+string match -q "*<branch>*" -- "$help_merge"; @test "help merge mentions <branch>" $status -eq 0
 
 # ─── Subcommand dispatch ────────────────────────────────────────────────
 
@@ -97,9 +103,13 @@ set -l sync_help_str ($wrangle sync --help | string join \n)
 not string match -q '*\\`*' -- "$sync_help_str"
 @test "sync help has no literal backslash-backticks" $status -eq 0
 
-set -l pull_help_str ($wrangle pull --help | string join \n)
-not string match -q '*\\`*' -- "$pull_help_str"
-@test "pull help has no literal backslash-backticks" $status -eq 0
+set -l update_help_str ($wrangle update --help | string join \n)
+not string match -q '*\\`*' -- "$update_help_str"
+@test "update help has no literal backslash-backticks" $status -eq 0
+
+set -l merge_help_str ($wrangle merge --help | string join \n)
+not string match -q '*\\`*' -- "$merge_help_str"
+@test "merge help has no literal backslash-backticks" $status -eq 0
 
 # ─── sync-specific: mutually-exclusive flags ────────────────────────────
 
@@ -110,16 +120,16 @@ string match -q "*mutually exclusive*" -- "$conflict_out"
 @test "sync --with-claude + --suppress-claude prints 'mutually exclusive'" $status -eq 0
 
 # Non-sync subcommands don't accept --with-claude (argparse rejects it).
-$wrangle pull --with-claude 2>/dev/null
-@test "pull rejects --with-claude (sync-only flag)" $status -ne 0
+$wrangle update --with-claude 2>/dev/null
+@test "update rejects --with-claude (sync-only flag)" $status -ne 0
 
-# ─── set-parent positional validation ───────────────────────────────────
+# ─── merge positional validation ────────────────────────────────────────
 
-set -l setp_out ($wrangle set-parent 2>&1)
-@test "set-parent with no args exits non-zero" $status -ne 0
+set -l merge_out ($wrangle merge 2>&1)
+@test "merge with no args exits non-zero" $status -ne 0
 
-string match -q "*expects exactly one argument*" -- "$setp_out"
-@test "set-parent with no args prints usage" $status -eq 0
+string match -q "*expects exactly one argument*" -- "$merge_out"
+@test "merge with no args prints usage" $status -eq 0
 
 # ─── push subcommand surface ────────────────────────────────────────────
 

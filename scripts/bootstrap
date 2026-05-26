@@ -64,16 +64,17 @@ else
     chsh -s "$FISH_PATH"
 fi
 
-# ── 5. Pick this machine's branch + its parent ──────────────────────────
-# Framework lives on `main` (shared, public-shippable). All your machine-
-# specific changes live on a per-machine branch (default name: `personal`)
-# that declares a parent. Wrangle auto-merges parent → this branch at the
-# start of every run, so framework updates flow downstream automatically.
+# ── 5. Pick this machine's branch + (optional) seed source ──────────────
+# Framework lives on `main` (shared, public-shippable). Each machine owns
+# one branch (default name: `personal`) for its own state. Machines are
+# peers — they diverge freely after init.
 #
-# Common layouts:
-#   - Single machine:        personal → main
-#   - Multiple machines:     home → personal → main, work → personal → main
-#   - Or:                    work → main (independent of personal)
+# A fresh machine-branch is created from `main`. Optionally you can seed
+# it from another existing machine-branch (one-time copy of starting
+# state); no persistent relationship is set up.
+#
+# To pull framework updates later: `wrangle update`.
+# To pull personal-layer content from another machine: `wrangle merge <branch>`.
 echo
 cd "$REPO_DIR"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -101,41 +102,32 @@ else
         echo "→ Checking out $MB from origin..."
         git checkout -b "$MB" "origin/$MB"
     else
-        DEFAULT_PARENT=main
-        printf "→ Parent branch for %s? [%s] " "$MB" "$DEFAULT_PARENT"
-        read -r PARENT
-        [ -z "$PARENT" ] && PARENT="$DEFAULT_PARENT"
-        # Ensure $PARENT exists locally. wrangle's chain-pull walks local
-        # branches by name, so a remote-only parent has to be materialized
-        # before we can branch from it (and before the chain will work).
-        if git show-ref --verify --quiet "refs/heads/$PARENT"; then
-            :
-        elif git ls-remote --exit-code --heads origin "$PARENT" >/dev/null 2>&1; then
-            echo "→ Creating local $PARENT tracking origin/$PARENT..."
-            git branch "$PARENT" "origin/$PARENT"
+        # Optionally seed from another machine-branch (one-time copy, no
+        # persistent relationship). Empty answer → seed from main.
+        echo "→ Seed $MB from an existing machine-branch (one-time copy of"
+        printf "  its current state), or empty to start from main? [name|<empty>]: "
+        read -r SEED
+        if [ -z "$SEED" ] || [ "$SEED" = main ]; then
+            SEED=main
+        fi
+        # Resolve seed: prefer origin/<seed>, fall back to local.
+        if git show-ref --verify --quiet "refs/heads/$SEED"; then
+            SEED_REF="$SEED"
+        elif git ls-remote --exit-code --heads origin "$SEED" >/dev/null 2>&1; then
+            echo "→ Creating local $SEED tracking origin/$SEED..."
+            git branch "$SEED" "origin/$SEED"
+            SEED_REF="$SEED"
         else
-            echo "✗ Parent branch '$PARENT' doesn't exist locally or on origin." >&2
-            echo "  Create it first, or pick a different parent (e.g. main)." >&2
+            echo "✗ Seed branch '$SEED' doesn't exist locally or on origin." >&2
+            echo "  Pick a different seed (e.g. main, or leave empty)." >&2
             exit 1
         fi
-        echo "→ Creating $MB from $PARENT..."
-        git checkout -b "$MB" "$PARENT"
-        git config "branch.$MB.wrangle-parent" "$PARENT"
-        echo "  (declared $PARENT as $MB's wrangle-parent)"
+        echo "→ Creating $MB from $SEED_REF..."
+        git checkout -b "$MB" "$SEED_REF"
     fi
 
     git config wrangle.machine-branch "$MB"
     echo "✓ Machine-branch set to: $MB"
-
-    # If no parent is set yet (e.g., branch was pre-existing), prompt now.
-    if ! git config "branch.$MB.wrangle-parent" >/dev/null 2>&1 && [ "$MB" != "main" ]; then
-        DEFAULT_PARENT=main
-        printf "→ Parent branch for %s (for wrangle's chain-pull)? [%s] " "$MB" "$DEFAULT_PARENT"
-        read -r PARENT
-        [ -z "$PARENT" ] && PARENT="$DEFAULT_PARENT"
-        git config "branch.$MB.wrangle-parent" "$PARENT"
-        echo "  (declared $PARENT as $MB's wrangle-parent)"
-    fi
 
     # Optional: push $MB to a remote NOW so wrangle's later push step has an
     # upstream to talk to. Only prompt when:

@@ -19,10 +19,7 @@ Everything below is idempotent. Safe to re-run on a partially-set-up machine; no
 1. **Homebrew** — installs it if missing; sources `brew shellenv` for the rest of the script.
 2. **Minimum kit** — `brew install fish stow git mas`. fish is the shell the scripts are written in; stow manages the symlinks; git pinned for clarity (you cloned this repo with it); mas is the only CLI gateway to the Mac App Store, so `brew bundle dump` can see MAS apps (idle if you never install one).
 3. **Login shell** — adds `$(brew --prefix)/bin/fish` to `/etc/shells` (sudo), then `chsh -s` to fish. Skipped if already in place.
-4. **Machine-branch + parent.** Prompts you for two things:
-   - Branch name for this machine (default: `personal`).
-   - If creating a new branch: its parent (default: `main`).
-   Writes `wrangle.machine-branch` and `branch.<name>.wrangle-parent` to `.git/config` (per-clone, not pushed). Already-on-a-configured-machine-branch is a no-op; existing-local-branch gets switched to; existing-on-origin gets checked out tracking origin; otherwise a fresh branch is created from the chosen parent.
+4. **Machine-branch.** Prompts for the branch name (default: `personal`). Writes `wrangle.machine-branch` to `.git/config` (per-clone, not pushed). If the branch already exists locally or on origin, switches to it. Otherwise creates a fresh branch — by default from `main`, optionally seeded from another existing machine-branch (a one-time copy of starting state; no persistent relationship).
 5. **Stow framework** — runs `stow --no-folding -t ~ home`. Creates a symlink for the framework's `wrangle_integration.fish` conf.d hook, plus any other tracked files under `home/`.
 6. **Fisher** — bootstraps the fish plugin manager if not already present.
 7. **First wrangle** — execs into a fresh fish session and runs `wrangle sync` (so PATH integration from the just-stowed conf.d hook is live).
@@ -43,7 +40,7 @@ Everything below is idempotent. Safe to re-run on a partially-set-up machine; no
 
 When bootstrap hands off, you're in interactive `wrangle`. What you'll see:
 
-- A parent-chain pull (Pass 1) — fetches origin, walks the chain, real-merges each parent into its child (skipping edges that are already up-to-date). On the very first run from a fresh branch, this typically lands as "already has parent's changes (skip)" since you just branched from it.
+- A framework update (Pass 1) — fetches origin and merges `origin/main` into your machine-branch. On the very first run from a fresh branch, this typically reports "already up to date" since you just branched from main.
 - A first-run welcome banner (only shows once per machine).
 - A one-time question asking whether to enable claude-code doc review.
 - A pre-stow integrity check for yoinked or orphaned dotfile symlinks.
@@ -65,19 +62,20 @@ For the per-domain detail on what each pass does, see **[README.md → How track
 
 ## Daily use
 
-Three subcommands cover the everyday loop:
+Four subcommands cover the everyday loop:
 
 - `wrangle sync` — the main one: detect drift across all domains, prompt per-item, commit, optionally push.
-- `wrangle pull` — fetch origin and cascade-merge along the parent chain. Framework updates and commits from upstream machine-branches arrive here.
+- `wrangle update` — fetch origin and merge `origin/main` into your machine-branch (framework updates).
+- `wrangle merge <branch>` — per-item adopt personal-layer content from another machine-branch (Brewfile entries, dotfiles, fisher plugins, univ-var patterns) into the current one.
 - `wrangle push` — push your current branch's commits.
 
-`wrangle help` lists the rest (env vars, git config keys, the less-frequent subcommands like `set-parent`, `review-docs`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
+`wrangle help` lists the rest (env vars, git config keys, less-frequent subcommands like `review-docs`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
 
 The repo nags you in three ways from new shells. All are colorized and prefixed with `wrangle:` so it's obvious where they come from, and each suggests a concrete subcommand to fix the situation:
 
 - **Staleness nag** — fires once per shell if `wrangle` hasn't run in > 7 days. Suggests `wrangle sync`.
 - **Unpushed nag** — fires once per shell if the current branch has unpushed commits. Suggests `wrangle push`.
-- **Pull nag** — fires when any chain-edge has new upstream commits, but **self-suppresses** for already-seen upstream SHAs (so you're not nagged twice about the same commits). Suggests `wrangle pull`.
+- **Update nag** — fires when `origin/main` has commits not yet merged into your machine-branch, but **self-suppresses** for already-seen `origin/main` SHAs (so you're not nagged twice about the same commits). Suggests `wrangle update`.
 
 All three are silenceable via env var (`WRANGLE_NO_STALENESS_NAG=1`, `WRANGLE_NO_PUSH_NAG=1`, `WRANGLE_NO_PULL_NAG=1`) but the nags themselves don't advertise this — they're designed to fire only when they have something new to say.
 
@@ -98,8 +96,7 @@ The repo itself is untouched. Re-stow any time with `stow --no-folding -t ~ home
 
 - `~/.cache/dotfiles/last-wrangle` — last successful run timestamp (machine-local).
 - `~/.cache/dotfiles/wrangle-config` — claude opt-in answer (machine-local).
-- `~/.cache/dotfiles/pull-cascade-state` — set when a `wrangle pull` hits a conflict; consumed by `wrangle pull --resume`.
-- `~/.cache/dotfiles/pull-nag-state` — per-parent SHA last nagged about (so the pull nag doesn't re-fire for the same commits).
+- `~/.cache/dotfiles/pull-nag-state` — origin/main SHA last nagged about (so the update nag doesn't re-fire for the same commits).
 - `<repo>/.wrangle-changelog` — running log of structural changes (used by claude when enabled).
 - `<repo>/.dotignore`, `<repo>/.brewignore`, `<repo>/.univexport`, `<repo>/.univignore` — ignore/allowlists, tracked on your machine-branch.
 - `<repo>/home/.config/fish/exported-univ-vars.fish` — auto-regenerated snapshot of universals matching `.univexport` patterns. Restored automatically by the next `wrangle sync` (Pass 7's import sub-pass): missing tracked vars are silent-applied; value conflicts prompt per-var.
@@ -111,6 +108,6 @@ The repo itself is untouched. Re-stow any time with `stow --no-folding -t ~ home
 For the full branch-model explanation see **[README.md → Branch model](README.md#branch-model)**. Quick summary:
 
 - **`main`** is framework only — wrangle/bootstrap scripts, ignore-list templates, tests, docs. Shared and semver-tagged.
-- **Your machine-branch** (default `personal`) is your machine state — `.gitconfig`, vim configs, Brewfile, plugin lists, captured universals. Per-user, can chain to other machine-branches (e.g., `work → personal → main`).
+- **Your machine-branch** (default `personal`) is your machine state — `.gitconfig`, vim configs, Brewfile, plugin lists, captured universals. Each machine owns one. Machines are peers, not a hierarchy.
 
-Wrangle's Pass 1 walks the parent chain at the start of every `wrangle sync` run and merges parents into their children, so framework updates flow into your machine-branch automatically. You never need to merge back to `main`. If you want to detach from upstream framework updates for one run, use `wrangle sync --no-branch-switch`.
+Wrangle's Pass 1 at the start of every `wrangle sync` merges `origin/main` into your machine-branch, so framework updates flow in automatically. You never need to merge back to `main`. To cross-pollinate personal-layer content between your own machines, use `wrangle merge <branch>` — it walks each domain and prompts per item. If you want to skip the framework update for one sync run, use `wrangle sync --no-branch-switch`.
