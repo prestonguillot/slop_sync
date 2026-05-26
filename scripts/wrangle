@@ -1583,10 +1583,21 @@ if test -f $univ_output_file
 
     if test "$_dry_run" = yes
         if test (count $missing) -gt 0
-            echo "  $GLYPH_DIM import: "(_n (count $missing))" tracked var(s) missing on machine (would silent-apply)"
+            echo "  $GLYPH_DIM import: "(_n (count $missing))" tracked var(s) missing on machine (would silent-apply):"
+            for name in $missing
+                echo "    "(_name $name)
+            end
         end
         if test (count $conflicts) -gt 0
-            echo "  $GLYPH_DIM import: "(_n (count $conflicts))" tracked var(s) with conflicting values (would prompt)"
+            echo "  $GLYPH_DIM import: "(_n (count $conflicts))" tracked var(s) with conflicting values (would prompt):"
+            for name in $conflicts
+                set -l repo_values (_wrangle_univ_parse_values $univ_output_file $name)
+                set -l live_values $$name
+                echo ""
+                echo "    "(_name $name)" — value differs:"
+                echo "      live: "(_dim)(string join " " $live_values)(_rs)
+                echo "      repo: "(_dim)(string join " " $repo_values)(_rs)
+            end
         end
     else
         # Silent apply for missing-on-machine — dotfile-stow precedent.
@@ -1688,88 +1699,95 @@ set -l univ_ignored 0
 set -l drift_total (math (count $drift_prefixes) + (count $drift_standalone))
 if test $drift_total -eq 0
     echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)"
-else if test "$_dry_run" = yes
-    echo "  $GLYPH_DIM dry run — "(_n $drift_total)" untracked group(s)/var(s) detected, nothing changed"
 else
-    echo "  Found "(_n $drift_total)" untracked group(s)/var(s)"
+    if test "$_dry_run" = yes
+        echo "  $GLYPH_DIM dry run — "(_n $drift_total)" untracked group(s)/var(s) detected, nothing would change:"
+    else
+        echo "  Found "(_n $drift_total)" untracked group(s)/var(s)"
+    end
 
-
-        # Prompt per prefix-group
-        for prefix in $drift_prefixes
-            # Collect actual vars under this prefix (sample up to 4 for display)
-            set -l members
-            for name in (set -U -L | awk '{print $1}')
-                set -l np (_univ_prefix $name)
-                test "$np" = "$prefix"; or continue
-                set -a members $name
-            end
-            set -l count (count $members)
-            echo ""
-            echo "    prefix "(_name "$prefix*")" — "(_n $count)" var(s):"
-            for m in $members
-                echo "      "(_name $m)
-            end
-            while true
-                read -P (_keys "    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > ") choice
-                switch $choice
-                    case t T track
-                        echo "$prefix*" >> $univ_export_file
-                        echo "      $GLYPH_OK added `$prefix*` to .univexport"
-                        _log_change "tracked univ-var pattern: $prefix*"
-                        set univ_changed yes
-                        set univ_tracked (math $univ_tracked + 1)
-                        break
-                    case i I ignore
-                        echo "$prefix*" >> $univ_ignore_file
-                        echo "      $GLYPH_OK added `$prefix*` to .univignore"
-                        echo "      $GLYPH_DIM tip: to capture an individual var from this prefix later,"
-                        echo "      $GLYPH_DIM      add its exact name on its own line in .univexport"
-                        echo "      $GLYPH_DIM      ($repo/.univexport — exact names match like patterns)"
-                        _log_change "ignored univ-var pattern: $prefix*"
-                        set univ_ignored (math $univ_ignored + 1)
-                        break
-                    case s S skip ''
-                        echo "      $GLYPH_DIM skipped (will ask again next run)"
-                        break
-                    case q Q quit
-                        _wrangle_abort quit
-                    case '*'
-                        echo "      ? '$choice' — answer t/i/s/q"
-                end
+    # Enumerate per prefix-group. Print members in both dry-run and real
+    # mode; only the prompt is gated.
+    for prefix in $drift_prefixes
+        set -l members
+        for name in (set -U -L | awk '{print $1}')
+            set -l np (_univ_prefix $name)
+            test "$np" = "$prefix"; or continue
+            set -a members $name
+        end
+        set -l count (count $members)
+        echo ""
+        echo "    prefix "(_name "$prefix*")" — "(_n $count)" var(s):"
+        for m in $members
+            echo "      "(_name $m)
+        end
+        if test "$_dry_run" = yes
+            continue
+        end
+        while true
+            read -P (_keys "    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > ") choice
+            switch $choice
+                case t T track
+                    echo "$prefix*" >> $univ_export_file
+                    echo "      $GLYPH_OK added `$prefix*` to .univexport"
+                    _log_change "tracked univ-var pattern: $prefix*"
+                    set univ_changed yes
+                    set univ_tracked (math $univ_tracked + 1)
+                    break
+                case i I ignore
+                    echo "$prefix*" >> $univ_ignore_file
+                    echo "      $GLYPH_OK added `$prefix*` to .univignore"
+                    echo "      $GLYPH_DIM tip: to capture an individual var from this prefix later,"
+                    echo "      $GLYPH_DIM      add its exact name on its own line in .univexport"
+                    echo "      $GLYPH_DIM      ($repo/.univexport — exact names match like patterns)"
+                    _log_change "ignored univ-var pattern: $prefix*"
+                    set univ_ignored (math $univ_ignored + 1)
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped (will ask again next run)"
+                    break
+                case q Q quit
+                    _wrangle_abort quit
+                case '*'
+                    echo "      ? '$choice' — answer t/i/s/q"
             end
         end
+    end
 
-        # Prompt per standalone (no-underscore) var, asking by exact name
-        for name in $drift_standalone
-            echo ""
-            echo "    standalone (no prefix): "(_name $name)" = "(string join " " $$name)
-            while true
-                read -P (_keys "    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > ") choice
-                switch $choice
-                    case t T track
-                        echo $name >> $univ_export_file
-                        echo "      $GLYPH_OK added `$name` to .univexport"
-                        _log_change "tracked univ-var: $name"
-                        set univ_changed yes
-                        set univ_tracked (math $univ_tracked + 1)
-                        break
-                    case i I ignore
-                        echo $name >> $univ_ignore_file
-                        echo "      $GLYPH_OK added `$name` to .univignore"
-                        _log_change "ignored univ-var: $name"
-                        set univ_ignored (math $univ_ignored + 1)
-                        break
-                    case s S skip ''
-                        echo "      $GLYPH_DIM skipped (will ask again next run)"
-                        break
-                    case q Q quit
-                        _wrangle_abort quit
-                    case '*'
-                        echo "      ? '$choice' — answer t/i/s/q"
-                end
+    # Enumerate per standalone (no-underscore) var. Same gating pattern.
+    for name in $drift_standalone
+        echo ""
+        echo "    standalone (no prefix): "(_name $name)" = "(string join " " $$name)
+        if test "$_dry_run" = yes
+            continue
+        end
+        while true
+            read -P (_keys "    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > ") choice
+            switch $choice
+                case t T track
+                    echo $name >> $univ_export_file
+                    echo "      $GLYPH_OK added `$name` to .univexport"
+                    _log_change "tracked univ-var: $name"
+                    set univ_changed yes
+                    set univ_tracked (math $univ_tracked + 1)
+                    break
+                case i I ignore
+                    echo $name >> $univ_ignore_file
+                    echo "      $GLYPH_OK added `$name` to .univignore"
+                    _log_change "ignored univ-var: $name"
+                    set univ_ignored (math $univ_ignored + 1)
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped (will ask again next run)"
+                    break
+                case q Q quit
+                    _wrangle_abort quit
+                case '*'
+                    echo "      ? '$choice' — answer t/i/s/q"
             end
         end
-end   # closes the if/else if/else for drift status
+    end
+end   # closes the if/else for drift status
 
 # Side-effects (file writes, regenerate, dirty-file report) only when NOT in
 # dry-run. Detection above already ran in both modes.
