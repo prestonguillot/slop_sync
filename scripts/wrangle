@@ -1,16 +1,19 @@
 #!/usr/bin/env fish
 # wrangle — the sync command. See README.md for the full picture.
 #
-# Branch model: each machine has its own branch (the "machine-branch") that
-# declares a parent via git config (`branch.<name>.wrangle-parent`). The
-# parent chain has arbitrary depth — e.g. work → personal → main. At the
-# start of every run wrangle walks the chain root-toward-leaf, merging each
-# parent into its child (skipping edges that are already up-to-date). On
-# merge conflict the cascade stops; resume after manual resolution with
-# `wrangle --resume-pull`.
+# Branch model: machines are peers. Each owns one branch (the
+# "machine-branch") and commits to it. Bootstrap initializes a new
+# machine-branch from `main` (optionally seeded from another existing
+# machine-branch's current state). After init, branches diverge freely.
+# Two operations cross the gap:
+#   - `wrangle update`         — merge framework updates (origin/main) into
+#                                the current machine-branch.
+#   - `wrangle merge <branch>` — per-domain, per-item adoption of personal-
+#                                layer content from another machine-branch
+#                                into the current one.
 #
 # Passes (in order):
-#   1. Parent-chain pull    — fetch + cascade-merge along the chain to machine-branch
+#   1. Framework update     — fetch + merge origin/main into machine-branch
 #   2. Yoink check          — broken symlinks in ~ → offer to remove from home/
 #   3. Orphan-symlink check — dangling symlinks in ~ pointing into home/ → remove
 #   4. Re-stow              — link any new files in home/ to ~
@@ -31,11 +34,12 @@
 #
 # Prompts use consistent letters:
 #   [t]rack          — capture into the repo
+#   [a]dopt          — pull content from source branch (wrangle merge)
 #   [i]gnore         — append to the per-pass skiplist (.dotignore / .brewignore /
 #                      .fisherignore / .univignore); leaves local state alone
+#   [k]eep mine      — keep current branch's value (wrangle merge conflict)
+#   [d]iff           — show the difference (wrangle merge conflict, re-prompts)
 #   [r]emove         — yoink/drop from the repo
-#   [a]pply          — write repo's value into live state (univ-var conflict)
-#   [k]eep local     — leave live state alone (univ-var conflict)
 #   [s]kip           — leave alone; ask again next run
 #   [q]uit
 #
@@ -44,10 +48,7 @@
 #   -f, --force               re-ask about paths in .dotignore
 #   --with-claude             force-on claude doc review this run (overrides opt-out file)
 #   --suppress-claude         force-off claude this run (overrides opt-in file)
-#   --reset-claude-session    nuke the cached claude session id; start fresh next run
-#   -p, --pull                walk parent chain (fetch + cascade-merge), then exit
-#   --resume-pull             continue a cascade interrupted by a merge conflict
-#   --set-parent <branch>     write branch.<current>.wrangle-parent in git config
+#   --no-branch-switch        skip the framework update at sync start
 #   -h, --help
 #
 # Env vars:
@@ -57,15 +58,13 @@
 #     WRANGLE_NO_PUSH_NAG=1        silence the unpushed-commits nag in new shells
 #     WRANGLE_NO_PULL_NAG=1        silence the upstream-changes-pending nag in new shells
 #     WRANGLE_NO_STALENESS_NAG=1   silence the "wrangle hasn't run in N days" nag
-#     WRANGLE_NO_BRANCH_SWITCH=1   skip the auto-switch to machine-branch
+#     WRANGLE_NO_BRANCH_SWITCH=1   skip the framework update at sync start
 #     WRANGLE_ALLOW_SECRETS=1      bypass scan-secrets at commit time
 #   Claude tuning (defaults are fast/cheap; raise for heavier reasoning):
 #     WRANGLE_CLAUDE_MODEL=sonnet  override claude model (alias or full name)
 #     WRANGLE_CLAUDE_EFFORT=low    override effort: low|medium|high|xhigh|max
 # Git config (per-clone):
 #   wrangle.machine-branch <name>           which branch this machine owns (default: personal)
-#   branch.<name>.wrangle-parent <parent>   what to merge from at the start of each run
-#                                           (default: main; empty = root branch with no parent)
 
 # ── FILE STRUCTURE ───────────────────────────────────────────────────────
 # Sections in reading order. To jump to any entry, search the file for its
@@ -76,15 +75,14 @@
 #   3. Helper library sourcing
 #   4. Color + spinner library
 #   5. Early-exit subcommand handlers
-#      5.1 reset-claude-session
-#      5.2 set-parent
-#      5.3 pull
-#      5.4 push
-#      5.5 review-docs
+#      5.1 update
+#      5.2 merge
+#      5.3 push
+#      5.4 review-docs
 #   6. Commit-message builders
-#   7. Parent-chain helper library
+#   7. Framework-update helper
 #   8. Sync pipeline
-#      8.1  Pass 1: parent-chain pull
+#      8.1  Pass 1: framework update
 #      8.2  First-run welcome + claude opt-in
 #      8.3  Pass 2: yoink check
 #      8.4  Pass 3: orphan-symlink check
@@ -119,7 +117,7 @@ end
 
 # Reject unknown subcommands.
 switch $_subcmd
-    case sync pull push review-docs set-parent reset-claude-session help
+    case sync update merge push review-docs help
         # known — handled below
     case '*'
         echo "wrangle: unknown subcommand: $_subcmd" >&2
@@ -128,11 +126,8 @@ switch $_subcmd
 end
 
 # Argparse: declares the UNION of all subcommand flags. We then validate
-# per-subcommand which flags are allowed (and reject combinations like
-# `wrangle pull --dry-run` where the flag belongs to a different subcommand).
-# Argparse must run at top-level (not in a switch/if) so the resulting
-# _flag_* vars survive into the rest of the script.
-argparse h/help d/dry-run f/force with-claude suppress-claude no-branch-switch resume -- $argv
+# per-subcommand which flags are allowed.
+argparse h/help d/dry-run f/force with-claude suppress-claude no-branch-switch -- $argv
 or exit 1
 
 # Per-subcommand flag-validity gate.
@@ -143,21 +138,14 @@ function _wrangle_reject_flag --argument-names subcmd flag
 end
 switch $_subcmd
     case sync
-        set -q _flag_resume; and _wrangle_reject_flag sync --resume
-    case pull
-        set -q _flag_dry_run;          and _wrangle_reject_flag pull --dry-run
-        set -q _flag_force;            and _wrangle_reject_flag pull --force
-        set -q _flag_with_claude;      and _wrangle_reject_flag pull --with-claude
-        set -q _flag_suppress_claude;  and _wrangle_reject_flag pull --suppress-claude
-        set -q _flag_no_branch_switch; and _wrangle_reject_flag pull --no-branch-switch
-    case push review-docs set-parent reset-claude-session help
+        # sync accepts all the configured flags; nothing to reject.
+    case update merge push review-docs help
         # No flags besides --help.
         set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
         set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
         set -q _flag_with_claude;      and _wrangle_reject_flag $_subcmd --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag $_subcmd --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag $_subcmd --no-branch-switch
-        set -q _flag_resume;           and _wrangle_reject_flag $_subcmd --resume
 end
 
 # ─── Help printers ───────────────────────────────────────────────────────
@@ -166,11 +154,10 @@ function _wrangle_help_top
     echo ""
     echo "Subcommands:"
     echo "  sync                  detect drift + commit + push (the main workflow)"
-    echo "  pull [--resume]       fetch + cascade-merge along the parent chain"
+    echo "  update                fetch + merge origin/main into the current machine-branch"
+    echo "  merge <branch>        per-item adopt personal-layer content from another machine-branch"
     echo "  push                  push the current branch to origin (preview first)"
     echo "  review-docs           skip drift; have claude review docs against recent commits"
-    echo "  set-parent <branch>   declare current branch's wrangle-parent in git config"
-    echo "  reset-claude-session  drop cached claude session id; next claude call uses a fresh one"
     echo "  help [<subcmd>]       this message, or detailed help for a subcommand"
     echo ""
     echo "Env-var knobs:"
@@ -179,15 +166,13 @@ function _wrangle_help_top
     echo "  WRANGLE_NO_PUSH_NAG           silence unpushed-commits nag on shell start"
     echo "  WRANGLE_NO_PULL_NAG           silence upstream-changes-pending nag on shell start"
     echo "  WRANGLE_NO_STALENESS_NAG      silence \"hasn't run in N days\" nag on shell start"
-    echo "  WRANGLE_NO_BRANCH_SWITCH      skip the parent-chain pull at sync start"
+    echo "  WRANGLE_NO_BRANCH_SWITCH      skip the framework update at sync start"
     echo "  WRANGLE_ALLOW_SECRETS         bypass scan-secrets at commit time"
     echo "  WRANGLE_CLAUDE_MODEL=sonnet   override claude model"
     echo "  WRANGLE_CLAUDE_EFFORT=low     override claude effort (low|medium|high|xhigh|max)"
     echo ""
     echo "Git config (per-clone):"
     echo "  wrangle.machine-branch <name>           which branch this machine owns (default: personal)"
-    echo "  branch.<X>.wrangle-parent <parent>      what to merge from at the start of each run"
-    echo "                                          (default: main; main itself never has a parent)"
 end
 
 function _wrangle_help_sync
@@ -203,22 +188,35 @@ function _wrangle_help_sync
     echo "  -f, --force           re-ask about paths already in .dotignore"
     echo "  --with-claude         force-on claude doc review this run (overrides config)"
     echo "  --suppress-claude     force-off claude this run (overrides config)"
-    echo "  --no-branch-switch    skip the parent-chain pull at the start (stay on current branch)"
+    echo "  --no-branch-switch    skip the framework update at the start (stay on current branch)"
 end
 
-function _wrangle_help_pull
-    echo "Usage: wrangle pull [--resume]"
+function _wrangle_help_update
+    echo "Usage: wrangle update"
     echo ""
-    echo "Fetch from origin and cascade-merge along the parent chain. For each"
-    echo "(parent, child) edge in the chain, real-merges parent into child (unless"
-    echo "the child already has the parent's commits, in which case skip)."
+    echo "Fetch origin and merge origin/main into the current machine-branch."
+    echo "Single edge — no chain, no cascade. If origin/main is already in the"
+    echo "current branch, prints \"up to date\" and exits 0."
     echo ""
-    echo "On merge conflict, stops mid-cascade, prints resolve instructions, and"
-    echo "saves resume state. Resolve manually (`git add` + `git commit`) then"
-    echo "continue with `wrangle pull --resume`."
+    echo "On merge conflict: stops, prints what to resolve. Resolve manually"
+    echo "(`git add` + `git commit`), then re-run `wrangle update`."
+end
+
+function _wrangle_help_merge
+    echo "Usage: wrangle merge <branch>"
     echo ""
-    echo "Options:"
-    echo "  --resume    continue a cascade that was interrupted by a merge conflict"
+    echo "Per-item adoption of personal-layer content from another machine-branch."
+    echo "Walks dotfiles + Brewfile + fish_plugins + univ-vars, comparing the"
+    echo "source branch's tracked state against the current branch's tracked"
+    echo "state. For each item present in <branch> that the current branch"
+    echo "doesn't have (or has with different contents), prompts what to do."
+    echo ""
+    echo "Add-only by default: items YOU have that <branch> doesn't are left"
+    echo "alone. Items matching the current branch's .ignore files are skipped"
+    echo "with a one-line note. Framework files (scripts/, README.md, etc.) are"
+    echo "never touched — those flow via PR → main → `wrangle update`."
+    echo ""
+    echo "Source resolves to origin/<branch> if it exists; otherwise local."
 end
 
 function _wrangle_help_push
@@ -244,25 +242,6 @@ function _wrangle_help_review_docs
     echo "(if you ran this subcommand, you opted in for this run)."
 end
 
-function _wrangle_help_set_parent
-    echo "Usage: wrangle set-parent <branch>"
-    echo ""
-    echo "Declare <branch> as the wrangle-parent of the current branch. Writes"
-    echo "branch.<current>.wrangle-parent to git config (per-clone). Used by"
-    echo "`wrangle pull` to determine where the cascade merges from."
-    echo ""
-    echo "Refuses to run if the current branch is `main` (main is always the root)."
-end
-
-function _wrangle_help_reset_claude_session
-    echo "Usage: wrangle reset-claude-session"
-    echo ""
-    echo "Drop the cached claude session id at ~/.cache/dotfiles/claude-session-id."
-    echo "The next claude invocation (from any other subcommand) starts a fresh"
-    echo "session instead of resuming the previous one. Useful when you want claude"
-    echo "to re-read repo state from scratch rather than relying on prior context."
-end
-
 # Dispatch help if requested.
 if test "$_subcmd" = help
     if test (count $argv) -eq 0
@@ -270,11 +249,10 @@ if test "$_subcmd" = help
     else
         switch $argv[1]
             case sync;                  _wrangle_help_sync
-            case pull;                  _wrangle_help_pull
+            case update;                _wrangle_help_update
+            case merge;                 _wrangle_help_merge
             case push;                  _wrangle_help_push
             case review-docs;           _wrangle_help_review_docs
-            case set-parent;            _wrangle_help_set_parent
-            case reset-claude-session;  _wrangle_help_reset_claude_session
             case '*'
                 echo "wrangle: unknown subcommand: $argv[1]" >&2
                 exit 2
@@ -286,11 +264,10 @@ end
 if set -q _flag_help
     switch $_subcmd
         case sync;                  _wrangle_help_sync
-        case pull;                  _wrangle_help_pull
+        case update;                _wrangle_help_update
+        case merge;                 _wrangle_help_merge
         case push;                  _wrangle_help_push
         case review-docs;           _wrangle_help_review_docs
-        case set-parent;            _wrangle_help_set_parent
-        case reset-claude-session;  _wrangle_help_reset_claude_session
     end
     exit 0
 end
@@ -320,8 +297,6 @@ set -l changelog_file $repo/.wrangle-changelog
 set -l cache_dir ~/.cache/dotfiles
 set -l last_run_stamp $cache_dir/last-wrangle
 set -l config_file $cache_dir/wrangle-config
-set -l claude_session_file $cache_dir/claude-session-id
-set -l pull_cascade_state $cache_dir/pull-cascade-state
 set -l pull_nag_state $cache_dir/pull-nag-state
 
 mkdir -p $cache_dir
@@ -338,9 +313,27 @@ end
 source $repo/scripts/_skiplist.fish      # .dotignore / .fisherignore parser + skiplist match
 source $repo/scripts/_univ_parse.fish    # exported-univ-vars.fish parser
 source $repo/scripts/_univ_helpers.fish  # _univ_prefix for capture sub-pass grouping
-source $repo/scripts/_chain.fish         # machine-branch + parent-chain resolution
-source $repo/scripts/_cascade_state.fish # pull-cascade resume + pull-nag state I/O
 source $repo/scripts/_commit_msg.fish    # commit-message builder (plain path)
+
+# Return the configured machine-branch for this clone, defaulting to `personal`.
+# Inlined (used to live in scripts/_chain.fish, but that file's other helpers
+# went away with the parent-chain model).
+function _wrangle_machine_branch --argument-names repo_path
+    set -l mb (git -C $repo_path config wrangle.machine-branch 2>/dev/null)
+    test -z "$mb"; and set mb personal
+    echo $mb
+end
+
+# Record that origin/main was successfully merged so the shell-start pull
+# nag stops re-firing until origin/main next moves. Single-line state file
+# now (no per-parent tracking; only main matters under the peer model).
+function _wrangle_record_main_nag --argument-names path repo_path
+    # `--verify` is load-bearing: without it, `git rev-parse origin/missing`
+    # echoes the literal ref to stdout (exit 128) and we'd write a bogus SHA.
+    set -l sha (git -C $repo_path rev-parse --verify origin/main 2>/dev/null)
+    test -z "$sha"; and return
+    echo "main:$sha" > $path
+end
 
 # ─── Color + spinner library ─────────────────────────────────────────────
 # Three-color visual hierarchy:
@@ -500,16 +493,8 @@ function _with_spinner_quiet --argument-names label
 end
 
 # ─── Early-exit subcommand handlers ──────────────────────────────────────
-# Each subcommand below (reset-claude-session, set-parent, pull, push,
-# review-docs) handles its work and exits, never falling through to the
-# sync pipeline.
-
-# ─── reset-claude-session ────────────────────────────────────────────────
-if test "$_subcmd" = reset-claude-session
-    rm -f $claude_session_file
-    printf "%s✓%s Cleared cached claude session id. Next claude invocation starts fresh.\n" (_ok) (_rs)
-    exit 0
-end
+# Each subcommand below (update, merge, push, review-docs) handles its
+# work and exits, never falling through to the sync pipeline.
 
 # Accumulators for the run summary.
 set -g _changes
@@ -557,21 +542,19 @@ end
 
 # Claude invocation helper. Single source of truth for model/effort/session-id
 # defaults and the claude CLI flags. Streams text output so the user sees
-# progress in real time. Session ID is owned by us (generated via uuidgen,
-# cached at $claude_session_file) — claude does the right thing whether the
-# id is new or already-known.
-function _wrangle_invoke_claude --inherit-variable claude_session_file
+# progress in real time. Each invocation gets a fresh session (no
+# `--session-id`), matching `_build_commit_msg_via_claude`'s stateless
+# pattern. Persistent sessions were a premature optimization — the
+# doc-review prompt is self-contained per run — and they failed
+# intermittently when a prior wrangle invocation was interrupted and left
+# the session locked server-side ("Session ID … is already in use").
+function _wrangle_invoke_claude
     set -l model sonnet
     set -l effort low
     test -n "$WRANGLE_CLAUDE_MODEL"; and set model "$WRANGLE_CLAUDE_MODEL"
     test -n "$WRANGLE_CLAUDE_EFFORT"; and set effort "$WRANGLE_CLAUDE_EFFORT"
 
-    if not test -f $claude_session_file
-        uuidgen | string lower > $claude_session_file
-    end
-    set -l session_id (cat $claude_session_file)
-
-    echo "  $GLYPH_DIM model=$model · effort=$effort · session="(string sub --start=1 --length=8 -- $session_id)"…"
+    echo "  $GLYPH_DIM model=$model · effort=$effort"
     echo ""
 
     # Spinner runs for the full claude duration. The streamed output appears
@@ -587,142 +570,65 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     _spinner_start "claude thinking… (model=$model effort=$effort)"
     claude -p --output-format text --permission-mode acceptEdits \
         --allowedTools "Read,Edit,Write,Grep,Glob" \
-        --model $model --effort $effort --session-id $session_id "$argv[1]"
+        --model $model --effort $effort "$argv[1]"
     set -l rv $status
     _spinner_stop
     return $rv
 end
 
-# ─── Parent-chain helper library ─────────────────────────────────────────
-# Branch metadata lives in git config (per-clone, not pushed):
-#   wrangle.machine-branch <name>                          # this machine's branch
-#   branch.<name>.wrangle-parent <parent>                  # empty = root
+# ─── Framework-update helper ─────────────────────────────────────────────
+# Fetches origin and merges origin/main into the current machine-branch.
+# Single edge (no chain). On merge conflict, bails with instructions —
+# user resolves manually, then re-runs `wrangle update`. Used by both the
+# `update` subcommand handler and Pass 1 of the sync pipeline.
 #
-# The chain-resolution helpers (`_wrangle_machine_branch`, `_wrangle_parent_of`,
-# `_wrangle_chain_for`) live in scripts/_chain.fish (sourced at the top of
-# this script). Cascade-state I/O (`_wrangle_save_cascade_state`,
-# `_wrangle_clear_cascade_state`, `_wrangle_record_pull_nag`) lives in
-# scripts/_cascade_state.fish. The orchestration below (`_wrangle_pull_chain`,
-# `_wrangle_do_push`, etc.) stays inline since it composes those helpers with
-# heavy use of script-local state.
-
-# Run the cascade. Walks (parent, child) edges root-toward-leaf, skipping
-# edges where the child already has the parent's commits. On a merge conflict
-# saves resume state and exits non-zero. Returns the original branch (where
-# we landed back on success).
-#
-# Usage: _wrangle_pull_chain  → walks from machine-branch's chain
-#        _wrangle_pull_chain --resume → continues from saved state
-function _wrangle_pull_chain --inherit-variable repo --inherit-variable pull_cascade_state
-    set -l resume no
-    if test "$argv[1]" = --resume
-        set resume yes
-    end
-
+# Returns: 0 on success (whether or not there were commits to merge),
+#          1 on merge conflict.
+function _wrangle_update --inherit-variable repo --inherit-variable pull_nag_state
     pushd $repo >/dev/null
 
-    set -l original
-    set -l edges
+    _with_spinner "Fetching origin…" git fetch origin --prune 2>/dev/null
 
-    if test $resume = yes
-        if not test -f $pull_cascade_state
-            echo "  $GLYPH_DIM no cascade in progress, nothing to resume"
-            popd >/dev/null
-            return 0
-        end
-        # Verify no merge is mid-flight (user has committed the resolution).
-        if test -f $repo/.git/MERGE_HEAD
-            echo "  $GLYPH_ERR merge still in progress — resolve and `git commit` first, then re-run --resume-pull"
-            popd >/dev/null
-            return 1
-        end
-        set -l first_line (head -1 $pull_cascade_state)
-        set original (string replace 'ORIGINAL_BRANCH:' '' -- $first_line)
-        set edges (tail -n +2 $pull_cascade_state)
-    else
-        set original (git rev-parse --abbrev-ref HEAD)
-        set -l machine_branch (_wrangle_machine_branch $repo)
-        set -l chain (_wrangle_chain_for $repo $machine_branch)
-        # Build (parent, child) edges from the chain. For chain [main, personal, work]:
-        # edges = [main:personal, personal:work]
-        if test (count $chain) -lt 2
-            # Only one branch in the chain (e.g. machine-branch is `main` itself).
-            popd >/dev/null
-            return 0
-        end
-        for i in (seq 1 (math (count $chain) - 1))
-            set edges $edges (printf '%s:%s' $chain[$i] $chain[(math $i + 1)])
-        end
+    set -l current (git rev-parse --abbrev-ref HEAD)
 
-        _with_spinner "Fetching origin…" git fetch origin --prune 2>/dev/null
+    # Verify origin/main exists (a brand-new clone with no remote main is rare
+    # but should not crash).
+    if not git rev-parse --verify --quiet origin/main >/dev/null
+        echo "  $GLYPH_DIM no origin/main; nothing to update from"
+        popd >/dev/null
+        return 0
     end
 
-    set -l merged_any no
-    for edge in $edges
-        set -l parts (string split ':' -- $edge)
-        set -l parent $parts[1]
-        set -l child $parts[2]
+    set -l ahead (git rev-list --count "$current..origin/main" 2>/dev/null)
+    test -z "$ahead"; and set ahead 0
 
-        # Skip-if-no-work check. Use origin/$parent so we count what's
-        # fetched, not what's in the local parent branch (which might be
-        # stale if we haven't checked it out in a while).
-        set -l parent_ref origin/$parent
-        # If origin/$parent doesn't exist (e.g. the parent is local-only),
-        # fall back to the local branch.
-        if not git rev-parse --verify --quiet $parent_ref >/dev/null
-            set parent_ref $parent
-        end
-
-        set -l ahead (git rev-list --count "$child..$parent_ref" 2>/dev/null)
-        test -z "$ahead"; and set ahead 0
-
-        if test "$ahead" -eq 0
-            echo "  $GLYPH_DIM $child already has "(_name $parent)"'s changes (skip)"
-            continue
-        end
-
-        # Checkout the child branch (creating from parent if it doesn't exist).
-        if not git show-ref --verify --quiet refs/heads/$child
-            _with_spinner "Creating $child from $parent_ref…" git checkout -b $child $parent_ref 2>&1
-        else
-            _with_spinner "Switching to $child…" git checkout $child 2>&1
-        end
-
-        # Real merge (--no-ff to preserve the merge boundary in git log).
-        _spinner_start "Merging "(_name $parent_ref)" into "(_name $child)" ($ahead commit(s))…"
-        set -l merge_out (git merge --no-ff $parent_ref -m "merge $parent_ref into $child (wrangle --pull)" 2>&1)
-        set -l merge_rv $status
-        _spinner_stop
-
-        if test $merge_rv -ne 0
-            # Probably a conflict. Save resume state with remaining edges
-            # (starting from this one, since it's now mid-merge).
-            set -l remaining_idx (contains -i -- $edge $edges)
-            set -l remaining $edges[$remaining_idx..-1]
-            _wrangle_save_cascade_state $pull_cascade_state $original $remaining
-            echo ""
-            echo "  $GLYPH_WARN merge conflict during cascade: "(_name $parent_ref)" → "(_name $child)
-            echo "    Files needing resolution:"
-            git diff --name-only --diff-filter=U | sed 's|^|      |'
-            echo ""
-            echo "  Resolve, then:"
-            echo "    git add <files> && git commit"
-            echo "    wrangle pull --resume"
-            popd >/dev/null
-            return 1
-        end
-
-        echo "  $GLYPH_OK merged "(_n $ahead)" commit(s) from "(_name $parent_ref)" into "(_name $child)
-        _wrangle_record_pull_nag $pull_nag_state $repo $parent
-        set merged_any yes
+    if test "$ahead" -eq 0
+        echo "  $GLYPH_OK "(_name $current)" already up to date with "(_name origin/main)
+        popd >/dev/null
+        return 0
     end
 
-    # Back to where we started.
-    if test (git rev-parse --abbrev-ref HEAD) != $original
-        _with_spinner "Switching back to $original…" git checkout $original 2>&1
+    _spinner_start "Merging "(_name origin/main)" into "(_name $current)" ($ahead commit(s))…"
+    git merge --no-ff origin/main -m "merge origin/main into $current (wrangle update)" 2>&1
+    set -l merge_rv $status
+    _spinner_stop
+
+    if test $merge_rv -ne 0
+        echo ""
+        echo "  $GLYPH_WARN merge conflict: "(_name origin/main)" → "(_name $current)
+        echo "    Files needing resolution:"
+        git diff --name-only --diff-filter=U | sed 's|^|      |'
+        echo ""
+        echo "  Resolve, then:"
+        echo "    git add <files> && git commit"
+        echo "    wrangle update     # re-run; will be a no-op if you committed the merge"
+        popd >/dev/null
+        return 1
     end
 
-    _wrangle_clear_cascade_state $pull_cascade_state
+    echo "  $GLYPH_OK merged "(_n $ahead)" commit(s) from "(_name origin/main)" into "(_name $current)
+    _wrangle_record_main_nag $pull_nag_state $repo
+
     popd >/dev/null
     return 0
 end
@@ -815,35 +721,360 @@ function _wrangle_do_push --inherit-variable repo --argument-names mode
     end
 end
 
-# ─── set-parent ──────────────────────────────────────────────────────────
-# `wrangle set-parent <branch>` — write branch.<current>.wrangle-parent, exit.
-if test "$_subcmd" = set-parent
-    if test (count $argv) -ne 1
-        echo "$GLYPH_ERR set-parent expects exactly one argument (the parent branch name)" >&2
-        echo "  usage: wrangle set-parent <branch>" >&2
-        exit 2
-    end
-    set -l target $argv[1]
-    set -l current (git -C $repo rev-parse --abbrev-ref HEAD)
-    if test "$current" = main
-        echo "$GLYPH_ERR refusing to set a wrangle-parent on main (main is the root)" >&2
-        exit 1
-    end
-    git -C $repo config "branch.$current.wrangle-parent" "$target"
-    echo "  $GLYPH_OK branch.$current.wrangle-parent = "(_name $target)
-    exit 0
+# ─── update ──────────────────────────────────────────────────────────────
+# `wrangle update` — fetch + merge origin/main into current machine-branch, exit.
+if test "$_subcmd" = update
+    _header "Framework update"
+    _wrangle_update
+    exit $status
 end
 
-# ─── pull ────────────────────────────────────────────────────────────────
-# `wrangle pull [--resume]` — cascade, exit.
-if test "$_subcmd" = pull
-    _header "Parent-chain pull"
-    if set -q _flag_resume
-        _wrangle_pull_chain --resume
-    else
-        _wrangle_pull_chain
+# ─── merge ───────────────────────────────────────────────────────────────
+# `wrangle merge <branch>` — per-item content adoption from another
+# machine-branch into the current one. Walks dotfiles + Brewfile +
+# fish_plugins + univ-vars, comparing source's tracked state vs current's.
+# Add-only by default. Honors current's .ignore files. Framework files are
+# never touched (those flow via PR → main → `wrangle update`).
+if test "$_subcmd" = merge
+    if test (count $argv) -ne 1
+        echo "$GLYPH_ERR merge expects exactly one argument (the source branch name)" >&2
+        echo "  usage: wrangle merge <branch>" >&2
+        exit 2
     end
-    exit $status
+    set -l src_arg $argv[1]
+
+    pushd $repo >/dev/null
+
+    set -l current (git rev-parse --abbrev-ref HEAD)
+    if test "$src_arg" = "$current"
+        echo "$GLYPH_ERR can't merge "(_name $current)" into itself" >&2
+        popd >/dev/null
+        exit 2
+    end
+    if test "$src_arg" = main
+        echo "$GLYPH_ERR main is the framework branch — use "(_name "wrangle update")" instead" >&2
+        popd >/dev/null
+        exit 2
+    end
+
+    # Resolve source: prefer origin/<branch>, fall back to local <branch>.
+    set -l source
+    if git rev-parse --verify --quiet origin/$src_arg >/dev/null
+        set source origin/$src_arg
+    else if git rev-parse --verify --quiet refs/heads/$src_arg >/dev/null
+        set source $src_arg
+    else
+        echo "$GLYPH_ERR no branch '$src_arg' on origin or locally" >&2
+        popd >/dev/null
+        exit 1
+    end
+
+    _header "Merge from $source"
+    echo "  $GLYPH_DIM source: "(_name $source)" → current: "(_name $current)
+    echo ""
+
+    # Load current branch's ignore lists (skiplist module exposes the loader).
+    set -l dot_ignores
+    test -f $repo/.dotignore;     and set dot_ignores     (_wrangle_load_dotignore $repo/.dotignore)
+    set -l brew_ignores
+    test -f $repo/.brewignore;    and set brew_ignores    (_wrangle_load_dotignore $repo/.brewignore)
+    set -l fisher_ignores
+    test -f $repo/.fisherignore;  and set fisher_ignores  (_wrangle_load_dotignore $repo/.fisherignore)
+    set -l univ_ignores
+    test -f $repo/.univignore;    and set univ_ignores    (_wrangle_load_dotignore $repo/.univignore)
+
+    # Reset counters used in summary.
+    set -g _merge_dot_adopted 0
+    set -g _merge_brew_adopted 0
+    set -g _merge_fisher_adopted 0
+    set -g _merge_univ_adopted 0
+    set -g _merge_need_restow no
+
+    # ── Domain 1: dotfiles ──────────────────────────────────────────────
+    _subheader "Dotfiles"
+    set -l src_dotfiles (git ls-tree -r $source --name-only -- home/ 2>/dev/null | grep -v '/\.gitkeep$')
+    set -l dot_total 0
+    for path in $src_dotfiles
+        set -l rel (string replace -- 'home/' '' $path)
+        # Honor .dotignore (the loader's match helper does substring/glob).
+        if _wrangle_is_skipped $rel $dot_ignores
+            echo "    $GLYPH_DIM skipping "(_name $rel)" (matches .dotignore)"
+            continue
+        end
+
+        set -l src_blob (git show $source:$path 2>/dev/null | string collect)
+        set -l current_blob
+        if test -f $repo/$path
+            set current_blob (cat $repo/$path | string collect)
+        end
+
+        if test -z "$current_blob"
+            # New file: prompt to adopt or skip.
+            echo ""
+            echo "    "(_name $path)" (new from source)"
+            while true
+                read -P (_keys "    [a]dopt / [s]kip / [q]uit > ") choice
+                switch $choice
+                    case a A adopt
+                        mkdir -p (dirname $repo/$path)
+                        printf '%s' "$src_blob" > $repo/$path
+                        set _merge_dot_adopted (math $_merge_dot_adopted + 1)
+                        set _merge_need_restow yes
+                        _log_change "adopted dotfile from $source: $rel"
+                        echo "      $GLYPH_OK adopted"
+                        break
+                    case s S skip ''
+                        echo "      $GLYPH_DIM skipped"
+                        break
+                    case q Q quit
+                        _wrangle_abort quit
+                    case '*'
+                        echo "      ? '$choice' — answer a/s/q"
+                end
+            end
+            set dot_total (math $dot_total + 1)
+        else if test "$current_blob" != "$src_blob"
+            # Conflict: prompt with 4 options.
+            echo ""
+            echo "    "(_name $path)" (differs from source)"
+            while true
+                read -P (_keys "    [a]dopt source / [k]eep mine / [d]iff / [s]kip / [q]uit > ") choice
+                switch $choice
+                    case a A adopt
+                        printf '%s' "$src_blob" > $repo/$path
+                        set _merge_dot_adopted (math $_merge_dot_adopted + 1)
+                        _log_change "adopted dotfile from $source: $rel (overwrote local)"
+                        echo "      $GLYPH_OK adopted source's version"
+                        break
+                    case k K keep
+                        echo "      $GLYPH_OK kept local"
+                        break
+                    case d D diff
+                        echo ""
+                        git --no-pager diff --no-index --color=always $repo/$path (printf '%s' "$src_blob" | psub) 2>&1 \
+                            | sed 's|^|      |'
+                        echo ""
+                        # Loop back to re-prompt.
+                    case s S skip ''
+                        echo "      $GLYPH_DIM skipped (will resurface next merge)"
+                        break
+                    case q Q quit
+                        _wrangle_abort quit
+                    case '*'
+                        echo "      ? '$choice' — answer a/k/d/s/q"
+                end
+            end
+            set dot_total (math $dot_total + 1)
+        end
+        # Identical → silent skip, doesn't increment dot_total.
+    end
+    if test $dot_total -eq 0
+        echo "    $GLYPH_OK no dotfile drift to merge"
+    end
+
+    # ── Domain 2: Brewfile ──────────────────────────────────────────────
+    echo ""
+    _subheader "Brewfile"
+    set -l src_brew_lines (git show $source:Brewfile 2>/dev/null | grep -vE '^\s*(#|$)')
+    set -l cur_brew_lines
+    test -f $repo/Brewfile; and set cur_brew_lines (grep -vE '^\s*(#|$)' $repo/Brewfile)
+    set -l brew_total 0
+    for line in $src_brew_lines
+        contains -- $line $cur_brew_lines; and continue
+        # Honor .brewignore (substring match).
+        set -l brew_skipped no
+        for pat in $brew_ignores
+            if string match -q "*$pat*" -- $line
+                echo "    $GLYPH_DIM skipping "(_name $line)" (matches .brewignore: $pat)"
+                set brew_skipped yes
+                break
+            end
+        end
+        test "$brew_skipped" = yes; and continue
+
+        echo ""
+        echo "    "(_name $line)
+        while true
+            read -P (_keys "    [a]dopt (append + brew install) / [s]kip / [q]uit > ") choice
+            switch $choice
+                case a A adopt
+                    echo $line >> $repo/Brewfile
+                    # Best-effort brew install: extract the quoted package name.
+                    set -l pkg (string match -r '"([^"]+)"' -- $line)[2]
+                    if test -n "$pkg"
+                        _with_spinner "brew bundle for $pkg…" brew bundle --no-lock --file=(echo $line | psub)
+                    end
+                    set _merge_brew_adopted (math $_merge_brew_adopted + 1)
+                    _log_change "adopted brew from $source: $line"
+                    echo "      $GLYPH_OK adopted"
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped"
+                    break
+                case q Q quit
+                    _wrangle_abort quit
+                case '*'
+                    echo "      ? '$choice' — answer a/s/q"
+            end
+        end
+        set brew_total (math $brew_total + 1)
+    end
+    if test $brew_total -eq 0
+        echo "    $GLYPH_OK no Brewfile drift to merge"
+    end
+
+    # ── Domain 3: fish_plugins ─────────────────────────────────────────
+    echo ""
+    _subheader "Fisher plugins"
+    set -l src_fisher_lines (git show $source:home/.config/fish/fish_plugins 2>/dev/null | grep -vE '^\s*(#|$)')
+    set -l cur_fisher_lines
+    test -f $repo/home/.config/fish/fish_plugins; and set cur_fisher_lines (grep -vE '^\s*(#|$)' $repo/home/.config/fish/fish_plugins)
+    set -l fisher_total 0
+    for plugin in $src_fisher_lines
+        contains -- $plugin $cur_fisher_lines; and continue
+        if contains -- $plugin $fisher_ignores
+            echo "    $GLYPH_DIM skipping "(_name $plugin)" (matches .fisherignore)"
+            continue
+        end
+
+        echo ""
+        echo "    "(_name $plugin)
+        while true
+            read -P (_keys "    [a]dopt (append + fisher install) / [s]kip / [q]uit > ") choice
+            switch $choice
+                case a A adopt
+                    echo $plugin >> $repo/home/.config/fish/fish_plugins
+                    if functions -q fisher
+                        _with_spinner "fisher install $plugin…" fish -c "fisher install $plugin"
+                    end
+                    set _merge_fisher_adopted (math $_merge_fisher_adopted + 1)
+                    _log_change "adopted fisher plugin from $source: $plugin"
+                    echo "      $GLYPH_OK adopted"
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped"
+                    break
+                case q Q quit
+                    _wrangle_abort quit
+                case '*'
+                    echo "      ? '$choice' — answer a/s/q"
+            end
+        end
+        set fisher_total (math $fisher_total + 1)
+    end
+    if test $fisher_total -eq 0
+        echo "    $GLYPH_OK no fisher_plugins drift to merge"
+    end
+
+    # ── Domain 4: univ-var patterns ────────────────────────────────────
+    echo ""
+    _subheader "Univ-var patterns"
+    set -l src_univ_patterns (git show $source:.univexport 2>/dev/null | grep -vE '^\s*(#|$)')
+    set -l cur_univ_patterns
+    test -f $repo/.univexport; and set cur_univ_patterns (grep -vE '^\s*(#|$)' $repo/.univexport)
+    set -l univ_total 0
+    for pat in $src_univ_patterns
+        contains -- $pat $cur_univ_patterns; and continue
+        # Honor .univignore (treat as patterns; substring + glob via string match).
+        set -l univ_skipped no
+        for ipat in $univ_ignores
+            if string match -q $ipat $pat
+                echo "    $GLYPH_DIM skipping "(_name $pat)" (matches .univignore: $ipat)"
+                set univ_skipped yes
+                break
+            end
+        end
+        test "$univ_skipped" = yes; and continue
+
+        echo ""
+        echo "    "(_name $pat)" (new pattern from source)"
+        while true
+            read -P (_keys "    [a]dopt (append + apply matching vars) / [s]kip / [q]uit > ") choice
+            switch $choice
+                case a A adopt
+                    echo $pat >> $repo/.univexport
+                    # Apply matching vars from source's exported file into live shell.
+                    set -l src_export_file_tmp (mktemp)
+                    git show $source:home/.config/fish/exported-univ-vars.fish > $src_export_file_tmp 2>/dev/null
+                    if test -s $src_export_file_tmp
+                        set -l names (_wrangle_univ_parse_names $src_export_file_tmp)
+                        for name in $names
+                            if string match -q $pat $name
+                                set -l vals (_wrangle_univ_parse_values $src_export_file_tmp $name)
+                                test (count $vals) -eq 0; and continue
+                                set -U --erase $name 2>/dev/null
+                                set -U $name $vals
+                            end
+                        end
+                    end
+                    rm -f $src_export_file_tmp
+                    set _merge_univ_adopted (math $_merge_univ_adopted + 1)
+                    _log_change "adopted univ-var pattern from $source: $pat"
+                    echo "      $GLYPH_OK adopted"
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped"
+                    break
+                case q Q quit
+                    _wrangle_abort quit
+                case '*'
+                    echo "      ? '$choice' — answer a/s/q"
+            end
+        end
+        set univ_total (math $univ_total + 1)
+    end
+    if test $univ_total -eq 0
+        echo "    $GLYPH_OK no univ-var pattern drift to merge"
+    end
+
+    # ── Post-merge: re-stow if any new dotfiles, regenerate univ-vars file if changed ──
+    if test "$_merge_need_restow" = yes; and command -q stow
+        echo ""
+        _with_spinner "Re-stowing home/ into ~…" stow --no-folding -R -t ~ home
+    end
+
+    if test $_merge_univ_adopted -gt 0
+        # Regenerate this branch's exported-univ-vars.fish with the new tracked patterns.
+        set -l univ_export_file $repo/.univexport
+        set -l univ_output_file $repo/home/.config/fish/exported-univ-vars.fish
+        _univ_regenerate
+    end
+
+    # ── End: commit if anything was adopted ────────────────────────────
+    set -l total (math $_merge_dot_adopted + $_merge_brew_adopted + $_merge_fisher_adopted + $_merge_univ_adopted)
+    echo ""
+    if test $total -eq 0
+        echo "  $GLYPH_OK no adoptions from $source — nothing to commit"
+        popd >/dev/null
+        exit 0
+    end
+
+    _header "Commit"
+    git add -A
+
+    if test -z "$WRANGLE_ALLOW_SECRETS"
+        _spinner_start "Scanning staged diff for secrets…"
+        set -l secret_hits (git diff --cached | $repo/scripts/scan-secrets)
+        _spinner_stop
+        if test (count $secret_hits) -gt 0
+            echo ""
+            echo "$GLYPH_ERR SECRET-LIKE PATTERNS in staged diff — refusing to commit:"
+            for h in $secret_hits
+                echo "    $h"
+            end
+            echo ""
+            echo "Resolve the offending content, or bypass with WRANGLE_ALLOW_SECRETS=1 and re-run."
+            popd >/dev/null
+            exit 1
+        end
+    end
+
+    set -l commit_msg "wrangle: merge from $source: $_merge_dot_adopted dotfile(s), $_merge_brew_adopted brew(s), $_merge_fisher_adopted fisher plugin(s), $_merge_univ_adopted univ-var pattern(s)"
+    _with_spinner "Committing…" git commit -m "$commit_msg"
+    echo "  $GLYPH_OK committed: $commit_msg"
+
+    popd >/dev/null
+    exit 0
 end
 
 # ─── push ────────────────────────────────────────────────────────────────
@@ -961,15 +1192,13 @@ end
 # one drift domain (or one finalization step). Subcommand handlers above
 # exited before reaching this point.
 
-# ─── Pass 1: parent-chain pull ───────────────────────────────────────────
-# Auto-switch to the machine-branch (default: personal), then cascade-merge
-# along the parent chain. See _wrangle_pull_chain for the full semantics.
+# ─── Pass 1: framework update ────────────────────────────────────────────
+# Auto-switch to the machine-branch (default: personal), then merge
+# origin/main into it (the framework update). Single edge — no chain.
 # Skip with --no-branch-switch / WRANGLE_NO_BRANCH_SWITCH=1.
 # In --dry-run mode the switch is reported but not performed — dry-run
-# must have no side effects, including no checkout. (Previously dry-run
-# DID switch branches, which surprised callers and broke test hermeticity
-# when scripts/run-tests invoked `wrangle sync --dry-run` against the
-# real working tree.)
+# must have no side effects, including no checkout.
+_header "Framework update"
 if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
     pushd $repo >/dev/null
 
@@ -982,11 +1211,8 @@ if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
             _with_spinner "Switching to $machine_branch…" git checkout $machine_branch 2>&1
             echo "  $GLYPH_ARROW switched to "(_name $machine_branch)" (was on "(_name $current_branch)")"
         else
-            set -l parent (_wrangle_parent_of $repo $machine_branch)
-            set -l from main
-            test -n "$parent"; and set from $parent
-            _with_spinner "Creating $machine_branch from $from…" git checkout -b $machine_branch $from 2>&1
-            echo "  $GLYPH_ARROW created + switched to "(_name $machine_branch)" from "(_name $from)" (was on "(_name $current_branch)")"
+            _with_spinner "Creating $machine_branch from main…" git checkout -b $machine_branch main 2>&1
+            echo "  $GLYPH_ARROW created + switched to "(_name $machine_branch)" from "(_name main)" (was on "(_name $current_branch)")"
         end
     end
 
@@ -994,14 +1220,18 @@ if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
 
     if test "$_dry_run" = no
         if git -C $repo remote | grep -q .
-            _wrangle_pull_chain
-            set -l cascade_rv $status
-            if test $cascade_rv -ne 0
-                # Cascade failed (conflict). Exit so user can resolve.
-                exit $cascade_rv
+            _wrangle_update
+            set -l update_rv $status
+            if test $update_rv -ne 0
+                # Merge conflict. Exit so user can resolve.
+                exit $update_rv
             end
         end
+    else
+        echo "  $GLYPH_DIM dry run — would fetch origin and merge origin/main into "(_name $machine_branch)
     end
+else
+    echo "  $GLYPH_DIM skipped (WRANGLE_NO_BRANCH_SWITCH set or --no-branch-switch passed)"
 end
 
 
@@ -1608,10 +1838,21 @@ if test -f $univ_output_file
 
     if test "$_dry_run" = yes
         if test (count $missing) -gt 0
-            echo "  $GLYPH_DIM import: "(_n (count $missing))" tracked var(s) missing on machine (would silent-apply)"
+            echo "  $GLYPH_DIM import: "(_n (count $missing))" tracked var(s) missing on machine (would silent-apply):"
+            for name in $missing
+                echo "    "(_name $name)
+            end
         end
         if test (count $conflicts) -gt 0
-            echo "  $GLYPH_DIM import: "(_n (count $conflicts))" tracked var(s) with conflicting values (would prompt)"
+            echo "  $GLYPH_DIM import: "(_n (count $conflicts))" tracked var(s) with conflicting values (would prompt):"
+            for name in $conflicts
+                set -l repo_values (_wrangle_univ_parse_values $univ_output_file $name)
+                set -l live_values $$name
+                echo ""
+                echo "    "(_name $name)" — value differs:"
+                echo "      live: "(_dim)(string join " " $live_values)(_rs)
+                echo "      repo: "(_dim)(string join " " $repo_values)(_rs)
+            end
         end
     else
         # Silent apply for missing-on-machine — dotfile-stow precedent.
@@ -1713,88 +1954,95 @@ set -l univ_ignored 0
 set -l drift_total (math (count $drift_prefixes) + (count $drift_standalone))
 if test $drift_total -eq 0
     echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)"
-else if test "$_dry_run" = yes
-    echo "  $GLYPH_DIM dry run — "(_n $drift_total)" untracked group(s)/var(s) detected, nothing changed"
 else
-    echo "  Found "(_n $drift_total)" untracked group(s)/var(s)"
+    if test "$_dry_run" = yes
+        echo "  $GLYPH_DIM dry run — "(_n $drift_total)" untracked group(s)/var(s) detected, nothing would change:"
+    else
+        echo "  Found "(_n $drift_total)" untracked group(s)/var(s)"
+    end
 
-
-        # Prompt per prefix-group
-        for prefix in $drift_prefixes
-            # Collect actual vars under this prefix (sample up to 4 for display)
-            set -l members
-            for name in (set -U -L | awk '{print $1}')
-                set -l np (_univ_prefix $name)
-                test "$np" = "$prefix"; or continue
-                set -a members $name
-            end
-            set -l count (count $members)
-            echo ""
-            echo "    prefix "(_name "$prefix*")" — "(_n $count)" var(s):"
-            for m in $members
-                echo "      "(_name $m)
-            end
-            while true
-                read -P (_keys "    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > ") choice
-                switch $choice
-                    case t T track
-                        echo "$prefix*" >> $univ_export_file
-                        echo "      $GLYPH_OK added `$prefix*` to .univexport"
-                        _log_change "tracked univ-var pattern: $prefix*"
-                        set univ_changed yes
-                        set univ_tracked (math $univ_tracked + 1)
-                        break
-                    case i I ignore
-                        echo "$prefix*" >> $univ_ignore_file
-                        echo "      $GLYPH_OK added `$prefix*` to .univignore"
-                        echo "      $GLYPH_DIM tip: to capture an individual var from this prefix later,"
-                        echo "      $GLYPH_DIM      add its exact name on its own line in .univexport"
-                        echo "      $GLYPH_DIM      ($repo/.univexport — exact names match like patterns)"
-                        _log_change "ignored univ-var pattern: $prefix*"
-                        set univ_ignored (math $univ_ignored + 1)
-                        break
-                    case s S skip ''
-                        echo "      $GLYPH_DIM skipped (will ask again next run)"
-                        break
-                    case q Q quit
-                        _wrangle_abort quit
-                    case '*'
-                        echo "      ? '$choice' — answer t/i/s/q"
-                end
+    # Enumerate per prefix-group. Print members in both dry-run and real
+    # mode; only the prompt is gated.
+    for prefix in $drift_prefixes
+        set -l members
+        for name in (set -U -L | awk '{print $1}')
+            set -l np (_univ_prefix $name)
+            test "$np" = "$prefix"; or continue
+            set -a members $name
+        end
+        set -l count (count $members)
+        echo ""
+        echo "    prefix "(_name "$prefix*")" — "(_n $count)" var(s):"
+        for m in $members
+            echo "      "(_name $m)
+        end
+        if test "$_dry_run" = yes
+            continue
+        end
+        while true
+            read -P (_keys "    [t]rack pattern / [i]gnore forever / [s]kip / [q]uit > ") choice
+            switch $choice
+                case t T track
+                    echo "$prefix*" >> $univ_export_file
+                    echo "      $GLYPH_OK added `$prefix*` to .univexport"
+                    _log_change "tracked univ-var pattern: $prefix*"
+                    set univ_changed yes
+                    set univ_tracked (math $univ_tracked + 1)
+                    break
+                case i I ignore
+                    echo "$prefix*" >> $univ_ignore_file
+                    echo "      $GLYPH_OK added `$prefix*` to .univignore"
+                    echo "      $GLYPH_DIM tip: to capture an individual var from this prefix later,"
+                    echo "      $GLYPH_DIM      add its exact name on its own line in .univexport"
+                    echo "      $GLYPH_DIM      ($repo/.univexport — exact names match like patterns)"
+                    _log_change "ignored univ-var pattern: $prefix*"
+                    set univ_ignored (math $univ_ignored + 1)
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped (will ask again next run)"
+                    break
+                case q Q quit
+                    _wrangle_abort quit
+                case '*'
+                    echo "      ? '$choice' — answer t/i/s/q"
             end
         end
+    end
 
-        # Prompt per standalone (no-underscore) var, asking by exact name
-        for name in $drift_standalone
-            echo ""
-            echo "    standalone (no prefix): "(_name $name)" = "(string join " " $$name)
-            while true
-                read -P (_keys "    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > ") choice
-                switch $choice
-                    case t T track
-                        echo $name >> $univ_export_file
-                        echo "      $GLYPH_OK added `$name` to .univexport"
-                        _log_change "tracked univ-var: $name"
-                        set univ_changed yes
-                        set univ_tracked (math $univ_tracked + 1)
-                        break
-                    case i I ignore
-                        echo $name >> $univ_ignore_file
-                        echo "      $GLYPH_OK added `$name` to .univignore"
-                        _log_change "ignored univ-var: $name"
-                        set univ_ignored (math $univ_ignored + 1)
-                        break
-                    case s S skip ''
-                        echo "      $GLYPH_DIM skipped (will ask again next run)"
-                        break
-                    case q Q quit
-                        _wrangle_abort quit
-                    case '*'
-                        echo "      ? '$choice' — answer t/i/s/q"
-                end
+    # Enumerate per standalone (no-underscore) var. Same gating pattern.
+    for name in $drift_standalone
+        echo ""
+        echo "    standalone (no prefix): "(_name $name)" = "(string join " " $$name)
+        if test "$_dry_run" = yes
+            continue
+        end
+        while true
+            read -P (_keys "    [t]rack exact name / [i]gnore forever / [s]kip / [q]uit > ") choice
+            switch $choice
+                case t T track
+                    echo $name >> $univ_export_file
+                    echo "      $GLYPH_OK added `$name` to .univexport"
+                    _log_change "tracked univ-var: $name"
+                    set univ_changed yes
+                    set univ_tracked (math $univ_tracked + 1)
+                    break
+                case i I ignore
+                    echo $name >> $univ_ignore_file
+                    echo "      $GLYPH_OK added `$name` to .univignore"
+                    _log_change "ignored univ-var: $name"
+                    set univ_ignored (math $univ_ignored + 1)
+                    break
+                case s S skip ''
+                    echo "      $GLYPH_DIM skipped (will ask again next run)"
+                    break
+                case q Q quit
+                    _wrangle_abort quit
+                case '*'
+                    echo "      ? '$choice' — answer t/i/s/q"
             end
         end
-end   # closes the if/else if/else for drift status
+    end
+end   # closes the if/else for drift status
 
 # Side-effects (file writes, regenerate, dirty-file report) only when NOT in
 # dry-run. Detection above already ran in both modes.
