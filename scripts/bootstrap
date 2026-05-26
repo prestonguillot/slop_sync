@@ -139,9 +139,97 @@ else
 fi
 
 # ── 6. Stow the framework into ~ ────────────────────────────────────────
+# On a machine that already has real config files at the paths the repo
+# tracks (e.g. ~/.gitconfig, ~/.config/fish/config.fish), stow refuses
+# to clobber them. We walk each conflicting path interactively before
+# the real stow run, giving you a chance to diff, adopt, keep, or skip.
+# Auto-resolves identical files by removing the machine copy so stow can
+# link cleanly.
 echo
+echo "→ Checking for stow conflicts..."
+
+# Pre-flight: dry-run stow to enumerate conflicting target paths (relative
+# to $HOME). Stow prints them on stderr; we extract the bit after
+# "existing target ".
+stow_conflicts() {
+    stow --no-folding -t "$HOME" -d "$REPO_DIR" -n home 2>&1 >/dev/null \
+        | sed -n 's/.*existing target \(.*\) since neither a link nor a directory.*/\1/p'
+}
+
+CONFLICTS_RAW="$(stow_conflicts || true)"
+
+if [ -n "$CONFLICTS_RAW" ]; then
+    CONFLICT_COUNT="$(printf '%s\n' "$CONFLICTS_RAW" | grep -c .)"
+    echo "→ Found $CONFLICT_COUNT conflicting file(s). Resolving each..."
+    echo
+    # Iterate line-by-line. Paths from stow don't contain newlines.
+    while IFS= read -r REL; do
+        [ -z "$REL" ] && continue
+        MACHINE="$HOME/$REL"
+        REPO_FILE="$REPO_DIR/home/$REL"
+
+        if [ ! -e "$REPO_FILE" ]; then
+            echo "  ! $REL: repo file missing at $REPO_FILE — skipping"
+            continue
+        fi
+
+        # Auto-resolve identical contents: just drop the machine copy.
+        if cmp -s "$MACHINE" "$REPO_FILE"; then
+            echo "  ✓ $REL: identical contents — removing machine copy so stow can link"
+            rm -f "$MACHINE"
+            continue
+        fi
+
+        # Loop until the user picks a terminal action for this file.
+        while true; do
+            echo "  ⚠ $REL differs between this machine and the repo."
+            printf "    [d]iff / [a]dopt machine's copy into repo / [k]eep repo (move machine aside to .bak) / [s]kip / [q]uit: "
+            read -r CHOICE </dev/tty
+            case "$CHOICE" in
+                d|D)
+                    echo "    --- diff: <machine  >repo ---"
+                    diff -u "$MACHINE" "$REPO_FILE" || true
+                    echo "    --- end diff ---"
+                    ;;
+                a|A)
+                    echo "    → adopting machine's $REL into repo (overwrites tracked copy on this branch)"
+                    cp "$MACHINE" "$REPO_FILE"
+                    rm -f "$MACHINE"
+                    git -C "$REPO_DIR" add "home/$REL"
+                    break
+                    ;;
+                k|K)
+                    echo "    → moving $MACHINE to $MACHINE.bak so stow can link the repo's copy"
+                    mv "$MACHINE" "$MACHINE.bak"
+                    break
+                    ;;
+                s|S)
+                    echo "    → skipped. $REL will remain unlinked until you resolve it later."
+                    break
+                    ;;
+                q|Q)
+                    echo "✗ Quit during conflict resolution. Re-run bootstrap to resume." >&2
+                    exit 1
+                    ;;
+                *)
+                    echo "    (unknown choice — pick one of d/a/k/s/q)"
+                    ;;
+            esac
+        done
+        echo
+    done <<< "$CONFLICTS_RAW"
+
+    # If anything got adopted, the index is now dirty; commit so the
+    # machine's contributions land on its branch and wrangle has a clean
+    # starting point. (No-op if nothing was adopted.)
+    if ! git -C "$REPO_DIR" diff --cached --quiet; then
+        echo "→ Committing adopted files to $(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)..."
+        git -C "$REPO_DIR" commit -m "bootstrap: adopt pre-existing dotfiles from this machine"
+    fi
+fi
+
 echo "→ Stowing framework files into ~..."
-stow --no-folding -t "$HOME" home
+stow --no-folding -t "$HOME" -d "$REPO_DIR" home
 echo "✓ Framework symlinked into ~"
 
 # ── 7. Bootstrap fisher (optional, but harmless if already present) ─────
