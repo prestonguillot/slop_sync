@@ -1,0 +1,6 @@
+{"mcp": {
+	"talon-scala-docs": {"url": "http://localhost:26038/mcp", "type": "remote"},
+	"wizard":           {"url": "http://localhost:34739/wizard/mcp", "type": "remote"},
+	"ghe":              {"url": "http://localhost:31671/github/mcp", "type": "remote"},
+	"gdrive":           {"url": "http://localhost:18544/gdrive/mcp", "type": "remote"}
+}}

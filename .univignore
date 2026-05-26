@@ -2,3 +2,4 @@
 # One pattern per line, fish-style globs. Comments (#) and blank lines ignored.
 # Typically populated by answering [i]gnore forever in a wrangle session.
 fish_*
+VIRTUAL_*

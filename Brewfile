@@ -16,8 +16,6 @@ brew "eza"
 brew "fd"
 # User-friendly command-line shell for UNIX-like operating systems
 brew "fish"
-# Fast and simple Node.js version manager
-brew "fnm"
 # Command-line fuzzy finder written in Go
 brew "fzf"
 # GitHub command-line tool
@@ -50,8 +48,6 @@ brew "rustup"
 brew "sbt"
 # Organize software neatly under a single directory tree (e.g. /usr/local)
 brew "stow"
-# Simplified and community-driven man pages
-brew "tldr"
 # Display directories as trees (with optional color/HTML output)
 brew "tree"
 # Network analyzer and capture tool - without graphical user interface
@@ -107,8 +103,6 @@ brew "newrelic-cli"
 brew "poppler"
 # Official tldr client written in Rust
 brew "tlrc"
-# Language for application scale JavaScript development
-brew "typescript"
 # Feature-rich interactive Jira command-line
 brew "ankitpokhrel/jira-cli/jira-cli"
 # ck-mcp-wrapper is a small cli tool that wraps local stdio mcp servers, providing OTEL metrics
@@ -126,4 +120,3 @@ cask "git-credential-manager"
 # Kubernetes and container management on the desktop
 cask "rancher"
 mas "Okta Verify", id: 490179405
-npm "@zed-industries/claude-code-acp"
