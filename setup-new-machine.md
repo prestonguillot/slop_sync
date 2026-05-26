@@ -66,7 +66,7 @@ Four subcommands cover the everyday loop:
 
 - `wrangle sync` — the main one: detect drift across all domains, prompt per-item, commit, optionally push.
 - `wrangle update` — fetch origin and merge `origin/main` into your machine-branch (framework updates).
-- `wrangle merge <branch>` — per-item adopt personal-layer content from another machine-branch (Brewfile entries, dotfiles, fisher plugins, univ-var patterns) into the current one. Per-item prompts let you `[a]dopt`, `[s]kip` once, or `[f]orever`-skip (writes to `.merge-skip`; bypass with `wrangle merge <branch> --force`).
+- `wrangle merge <branch>` — per-item adopt personal-layer content from another machine-branch (Brewfile entries, dotfiles, fisher plugins, univ-var patterns) into the current one. Per-item prompts let you `[a]dopt`, `[s]kip` once, or `skip [f]orever` (writes to `.merge-skip`; bypass with `wrangle merge <branch> --force`).
 - `wrangle push` — push your current branch's commits.
 
 `wrangle help` lists the rest (env vars, git config keys, less-frequent subcommands like `review-docs`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.

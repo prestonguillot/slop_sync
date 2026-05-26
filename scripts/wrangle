@@ -217,9 +217,9 @@ function _wrangle_help_merge
     echo "state. For each item present in <branch> that the current branch"
     echo "doesn't have (or has with different contents), prompts what to do."
     echo ""
-    echo "Prompts for new items: [a]dopt / [f]orever / [s]kip / [q]uit."
-    echo "  [f]orever appends the item to .merge-skip; future merges silently"
-    echo "  skip it. Bypass with --force."
+    echo "Prompts for new items: [a]dopt / skip [f]orever / [s]kip / [q]uit."
+    echo "  `skip [f]orever` appends the item to .merge-skip; future merges"
+    echo "  silently skip it. Bypass with --force."
     echo ""
     echo "Add-only by default: items YOU have that <branch> doesn't are left"
     echo "alone. Items matching the current branch's .ignore files are skipped"
@@ -229,7 +229,7 @@ function _wrangle_help_merge
     echo "Source resolves to origin/<branch> if it exists; otherwise local."
     echo ""
     echo "Options:"
-    echo "  -f, --force    bypass .merge-skip (re-prompt items previously marked [f]orever)"
+    echo "  -f, --force    bypass .merge-skip (re-prompt items previously marked skip [f]orever)"
 end
 
 function _wrangle_help_push
@@ -861,7 +861,7 @@ if test "$_subcmd" = merge
             echo ""
             echo "    "(_name $path)" (new from source)"
             while true
-                read -P (_keys "    [a]dopt / [f]orever (never in merges) / [s]kip / [q]uit > ") choice
+                read -P (_keys "    [a]dopt / skip [f]orever / [s]kip / [q]uit > ") choice
                 switch $choice
                     case a A adopt
                         mkdir -p (dirname $repo/$path)
@@ -953,7 +953,7 @@ if test "$_subcmd" = merge
         echo ""
         echo "    "(_name $line)
         while true
-            read -P (_keys "    [a]dopt (append + brew install) / [f]orever (never in merges) / [s]kip / [q]uit > ") choice
+            read -P (_keys "    [a]dopt (append + brew install) / skip [f]orever / [s]kip / [q]uit > ") choice
             switch $choice
                 case a A adopt
                     echo $line >> $repo/Brewfile
@@ -1011,7 +1011,7 @@ if test "$_subcmd" = merge
         echo ""
         echo "    "(_name $plugin)
         while true
-            read -P (_keys "    [a]dopt (append + fisher install) / [f]orever (never in merges) / [s]kip / [q]uit > ") choice
+            read -P (_keys "    [a]dopt (append + fisher install) / skip [f]orever / [s]kip / [q]uit > ") choice
             switch $choice
                 case a A adopt
                     echo $plugin >> $repo/home/.config/fish/fish_plugins
@@ -1070,7 +1070,7 @@ if test "$_subcmd" = merge
         echo ""
         echo "    "(_name $pat)" (new pattern from source)"
         while true
-            read -P (_keys "    [a]dopt (append + apply matching vars) / [f]orever (never in merges) / [s]kip / [q]uit > ") choice
+            read -P (_keys "    [a]dopt (append + apply matching vars) / skip [f]orever / [s]kip / [q]uit > ") choice
             switch $choice
                 case a A adopt
                     echo $pat >> $repo/.univexport
