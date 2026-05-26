@@ -105,6 +105,19 @@ else
         printf "→ Parent branch for %s? [%s] " "$MB" "$DEFAULT_PARENT"
         read -r PARENT
         [ -z "$PARENT" ] && PARENT="$DEFAULT_PARENT"
+        # Ensure $PARENT exists locally. wrangle's chain-pull walks local
+        # branches by name, so a remote-only parent has to be materialized
+        # before we can branch from it (and before the chain will work).
+        if git show-ref --verify --quiet "refs/heads/$PARENT"; then
+            :
+        elif git ls-remote --exit-code --heads origin "$PARENT" >/dev/null 2>&1; then
+            echo "→ Creating local $PARENT tracking origin/$PARENT..."
+            git branch "$PARENT" "origin/$PARENT"
+        else
+            echo "✗ Parent branch '$PARENT' doesn't exist locally or on origin." >&2
+            echo "  Create it first, or pick a different parent (e.g. main)." >&2
+            exit 1
+        fi
         echo "→ Creating $MB from $PARENT..."
         git checkout -b "$MB" "$PARENT"
         git config "branch.$MB.wrangle-parent" "$PARENT"
