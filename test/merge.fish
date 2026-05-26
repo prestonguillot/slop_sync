@@ -149,6 +149,17 @@ end
 set -l after_head (git -C $fix5 rev-parse personal)
 test "$before_head" = "$after_head"
 @test "after all-skip merge: no commit on personal" $status -eq 0
+
+# Domain-exclusion: fish_plugins is owned by the fisher domain, so the
+# dotfile-domain enumeration must NOT surface it (otherwise the user
+# gets prompted twice for the same change).
+not grep -q 'home/\.config/fish/fish_plugins' $home5/merge.log
+@test "all-skip merge: dotfile section does NOT mention home/.config/fish/fish_plugins" $status -eq 0
+# Sanity: the fisher plugin name (PatrickF1/fzf.fish) still appears,
+# proving the fisher domain still surfaces the drift.
+grep -q 'PatrickF1/fzf.fish' $home5/merge.log
+@test "all-skip merge: fisher section still surfaces the new plugin" $status -eq 0
+
 rm -rf $fix5 $home5
 
 # ─── ignore-file honored: brewignore entry suppresses prompt for that brew
