@@ -143,7 +143,6 @@ Things that aren't on `main` (they're personal-layer, on your machine-branch): `
 | `wrangle push` | Push the current branch to origin, with a preview of what's about to ship. No prompt — typing the subcommand is the decision. |
 | `wrangle review-docs` | Skip drift; have claude review the repo's docs against recent commits. |
 | `wrangle set-parent <branch>` | Declare `<branch>` as the current branch's wrangle-parent (writes git config). |
-| `wrangle reset-claude-session` | Drop the cached claude session id. Next claude call starts fresh. |
 
 Bare `wrangle`, `wrangle -h`, and `wrangle --help` all print top-level help. There's no implicit-sync shortcut — type `wrangle sync` to sync.
 
@@ -204,7 +203,6 @@ Cache files at `~/.cache/dotfiles/` (nothing user-facing — documented here for
 ```
 last-wrangle           timestamp of last successful sync (drives staleness nag)
 wrangle-config         "WRANGLE_CLAUDE_OPT_IN=yes" or =no, set by first-run question
-claude-session-id      persistent UUID for claude --session-id
 pull-cascade-state     set when a `wrangle pull` hits a conflict; consumed by `--resume`
 pull-nag-state         per-parent SHA last nagged about (deduplicates the pull nag)
 ```

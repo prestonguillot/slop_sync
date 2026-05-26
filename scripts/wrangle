@@ -44,7 +44,6 @@
 #   -f, --force               re-ask about paths in .dotignore
 #   --with-claude             force-on claude doc review this run (overrides opt-out file)
 #   --suppress-claude         force-off claude this run (overrides opt-in file)
-#   --reset-claude-session    nuke the cached claude session id; start fresh next run
 #   -p, --pull                walk parent chain (fetch + cascade-merge), then exit
 #   --resume-pull             continue a cascade interrupted by a merge conflict
 #   --set-parent <branch>     write branch.<current>.wrangle-parent in git config
@@ -76,11 +75,10 @@
 #   3. Helper library sourcing
 #   4. Color + spinner library
 #   5. Early-exit subcommand handlers
-#      5.1 reset-claude-session
-#      5.2 set-parent
-#      5.3 pull
-#      5.4 push
-#      5.5 review-docs
+#      5.1 set-parent
+#      5.2 pull
+#      5.3 push
+#      5.4 review-docs
 #   6. Commit-message builders
 #   7. Parent-chain helper library
 #   8. Sync pipeline
@@ -119,7 +117,7 @@ end
 
 # Reject unknown subcommands.
 switch $_subcmd
-    case sync pull push review-docs set-parent reset-claude-session help
+    case sync pull push review-docs set-parent help
         # known — handled below
     case '*'
         echo "wrangle: unknown subcommand: $_subcmd" >&2
@@ -150,7 +148,7 @@ switch $_subcmd
         set -q _flag_with_claude;      and _wrangle_reject_flag pull --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag pull --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag pull --no-branch-switch
-    case push review-docs set-parent reset-claude-session help
+    case push review-docs set-parent help
         # No flags besides --help.
         set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
         set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
@@ -170,7 +168,6 @@ function _wrangle_help_top
     echo "  push                  push the current branch to origin (preview first)"
     echo "  review-docs           skip drift; have claude review docs against recent commits"
     echo "  set-parent <branch>   declare current branch's wrangle-parent in git config"
-    echo "  reset-claude-session  drop cached claude session id; next claude call uses a fresh one"
     echo "  help [<subcmd>]       this message, or detailed help for a subcommand"
     echo ""
     echo "Env-var knobs:"
@@ -254,15 +251,6 @@ function _wrangle_help_set_parent
     echo "Refuses to run if the current branch is `main` (main is always the root)."
 end
 
-function _wrangle_help_reset_claude_session
-    echo "Usage: wrangle reset-claude-session"
-    echo ""
-    echo "Drop the cached claude session id at ~/.cache/dotfiles/claude-session-id."
-    echo "The next claude invocation (from any other subcommand) starts a fresh"
-    echo "session instead of resuming the previous one. Useful when you want claude"
-    echo "to re-read repo state from scratch rather than relying on prior context."
-end
-
 # Dispatch help if requested.
 if test "$_subcmd" = help
     if test (count $argv) -eq 0
@@ -274,7 +262,6 @@ if test "$_subcmd" = help
             case push;                  _wrangle_help_push
             case review-docs;           _wrangle_help_review_docs
             case set-parent;            _wrangle_help_set_parent
-            case reset-claude-session;  _wrangle_help_reset_claude_session
             case '*'
                 echo "wrangle: unknown subcommand: $argv[1]" >&2
                 exit 2
@@ -290,7 +277,6 @@ if set -q _flag_help
         case push;                  _wrangle_help_push
         case review-docs;           _wrangle_help_review_docs
         case set-parent;            _wrangle_help_set_parent
-        case reset-claude-session;  _wrangle_help_reset_claude_session
     end
     exit 0
 end
@@ -320,7 +306,6 @@ set -l changelog_file $repo/.wrangle-changelog
 set -l cache_dir ~/.cache/dotfiles
 set -l last_run_stamp $cache_dir/last-wrangle
 set -l config_file $cache_dir/wrangle-config
-set -l claude_session_file $cache_dir/claude-session-id
 set -l pull_cascade_state $cache_dir/pull-cascade-state
 set -l pull_nag_state $cache_dir/pull-nag-state
 
@@ -500,16 +485,8 @@ function _with_spinner_quiet --argument-names label
 end
 
 # ─── Early-exit subcommand handlers ──────────────────────────────────────
-# Each subcommand below (reset-claude-session, set-parent, pull, push,
-# review-docs) handles its work and exits, never falling through to the
-# sync pipeline.
-
-# ─── reset-claude-session ────────────────────────────────────────────────
-if test "$_subcmd" = reset-claude-session
-    rm -f $claude_session_file
-    printf "%s✓%s Cleared cached claude session id. Next claude invocation starts fresh.\n" (_ok) (_rs)
-    exit 0
-end
+# Each subcommand below (set-parent, pull, push, review-docs) handles its
+# work and exits, never falling through to the sync pipeline.
 
 # Accumulators for the run summary.
 set -g _changes
@@ -557,21 +534,19 @@ end
 
 # Claude invocation helper. Single source of truth for model/effort/session-id
 # defaults and the claude CLI flags. Streams text output so the user sees
-# progress in real time. Session ID is owned by us (generated via uuidgen,
-# cached at $claude_session_file) — claude does the right thing whether the
-# id is new or already-known.
-function _wrangle_invoke_claude --inherit-variable claude_session_file
+# progress in real time. Each invocation gets a fresh session (no
+# `--session-id`), matching `_build_commit_msg_via_claude`'s stateless
+# pattern. Persistent sessions were a premature optimization — the
+# doc-review prompt is self-contained per run — and they failed
+# intermittently when a prior wrangle invocation was interrupted and left
+# the session locked server-side ("Session ID … is already in use").
+function _wrangle_invoke_claude
     set -l model sonnet
     set -l effort low
     test -n "$WRANGLE_CLAUDE_MODEL"; and set model "$WRANGLE_CLAUDE_MODEL"
     test -n "$WRANGLE_CLAUDE_EFFORT"; and set effort "$WRANGLE_CLAUDE_EFFORT"
 
-    if not test -f $claude_session_file
-        uuidgen | string lower > $claude_session_file
-    end
-    set -l session_id (cat $claude_session_file)
-
-    echo "  $GLYPH_DIM model=$model · effort=$effort · session="(string sub --start=1 --length=8 -- $session_id)"…"
+    echo "  $GLYPH_DIM model=$model · effort=$effort"
     echo ""
 
     # Spinner runs for the full claude duration. The streamed output appears
@@ -587,7 +562,7 @@ function _wrangle_invoke_claude --inherit-variable claude_session_file
     _spinner_start "claude thinking… (model=$model effort=$effort)"
     claude -p --output-format text --permission-mode acceptEdits \
         --allowedTools "Read,Edit,Write,Grep,Glob" \
-        --model $model --effort $effort --session-id $session_id "$argv[1]"
+        --model $model --effort $effort "$argv[1]"
     set -l rv $status
     _spinner_stop
     return $rv
