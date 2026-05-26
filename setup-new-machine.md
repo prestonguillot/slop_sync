@@ -71,7 +71,7 @@ Three subcommands cover the everyday loop:
 - `wrangle pull` — fetch origin and cascade-merge along the parent chain. Framework updates and commits from upstream machine-branches arrive here.
 - `wrangle push` — push your current branch's commits.
 
-`wrangle help` lists the rest (env vars, git config keys, the less-frequent subcommands like `set-parent`, `review-docs`, `reset-claude-session`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
+`wrangle help` lists the rest (env vars, git config keys, the less-frequent subcommands like `set-parent`, `review-docs`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
 
 The repo nags you in three ways from new shells. All are colorized and prefixed with `wrangle:` so it's obvious where they come from, and each suggests a concrete subcommand to fix the situation:
 
@@ -98,7 +98,6 @@ The repo itself is untouched. Re-stow any time with `stow --no-folding -t ~ home
 
 - `~/.cache/dotfiles/last-wrangle` — last successful run timestamp (machine-local).
 - `~/.cache/dotfiles/wrangle-config` — claude opt-in answer (machine-local).
-- `~/.cache/dotfiles/claude-session-id` — cached claude session for resumption.
 - `~/.cache/dotfiles/pull-cascade-state` — set when a `wrangle pull` hits a conflict; consumed by `wrangle pull --resume`.
 - `~/.cache/dotfiles/pull-nag-state` — per-parent SHA last nagged about (so the pull nag doesn't re-fire for the same commits).
 - `<repo>/.wrangle-changelog` — running log of structural changes (used by claude when enabled).
