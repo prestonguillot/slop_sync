@@ -31,17 +31,6 @@ Verify: `java --version` should print something like `openjdk 26.x.x …`.
 
 If you don't actually want Java on a given machine, remove `brew "openjdk"` and `brew "sbt"` from the Brewfile and uninstall them.
 
-## Install a Node version (`fnm`)
-
-`fnm` is wired into `config.fish` (`fnm env --use-on-cd | source`) so node-version auto-switching works in any directory with a `.nvmrc` or `.node-version`. But fnm doesn't ship with a node; install one once:
-
-```fish
-fnm install --lts
-fnm default lts-latest
-```
-
-`node --version` should report the LTS now.
-
 ## Mac App Store
 
 Sign into the App Store app with the Apple ID that originally purchased my MAS apps (currently Okta Verify, `id: 490179405`). `brew bundle install` will skip MAS lines for unowned apps with a warning rather than failing.
@@ -85,6 +74,26 @@ Rancher Desktop provides local Kubernetes and a Docker-compatible container runt
 2. Configure the Kubernetes version.
 
 It also installs `kubectl`, `helm`, `nerdctl`, and `docker` CLI shims under `~/.rd/bin/`. Make sure that path is in `$PATH` (the fish config in this repo should handle it if `~/.rd/bin` is included).
+
+## Jira CLI (`jira-cli`)
+
+`jira-cli` requires a Jira API token. After install:
+
+```fish
+jira init
+```
+
+It will prompt for your Jira server URL (e.g. `https://jira.intuit.com`), email, and an API token. Generate a token at your Jira profile → Security → API tokens. Config is written to `~/.config/.jira/.config.yml`.
+
+## ToolHive (`thv`)
+
+`thv` (ToolHive) manages MCP servers. No mandatory setup on install, but to add and run an MCP server:
+
+```fish
+thv run <server-image>
+```
+
+See `thv --help` for available subcommands. Servers run as isolated containers; Rancher Desktop (or another OCI runtime) must be running.
 
 ## Fisher plugins
 
