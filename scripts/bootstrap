@@ -136,6 +136,44 @@ else
         git config "branch.$MB.wrangle-parent" "$PARENT"
         echo "  (declared $PARENT as $MB's wrangle-parent)"
     fi
+
+    # Optional: push $MB to a remote NOW so wrangle's later push step has an
+    # upstream to talk to. Only prompt when:
+    #   - there's exactly one remote (zero = nowhere to push; multiple = user
+    #     can set up manually), AND
+    #   - the branch has no upstream yet (created-from-origin-$MB above already
+    #     set tracking; nothing to do there).
+    REMOTES="$(git remote)"
+    REMOTE_COUNT="$(printf '%s\n' "$REMOTES" | grep -c .)"
+    if ! git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 && [ "$REMOTE_COUNT" = "1" ]; then
+        REMOTE="$REMOTES"
+        echo
+        echo "→ Push $MB to $REMOTE now? Creates an upstream so \`wrangle sync\`"
+        echo "  can push to it on subsequent runs (otherwise sync silently"
+        echo "  skips its push step — no upstream means no push prompt)."
+        echo
+        echo "  WARNING: wrangle's secret-scanner is a regex pass — it catches the"
+        echo "  obvious shapes (AWS/GitHub/Slack/Stripe/OpenAI/Anthropic/Google"
+        echo "  keys, JWTs, PEM/SSH/PGP blocks) but it doesn't catch every secret."
+        echo "  Don't push to a public remote without auditing what's tracked."
+        echo
+        printf "  Push now? [y]es / [N]o: "
+        read -r PUSH_CHOICE
+        case "$PUSH_CHOICE" in
+            y|Y|yes|Yes|YES)
+                if git push -u "$REMOTE" "$MB"; then
+                    echo "  ✓ Pushed $MB → $REMOTE/$MB (upstream tracking set)."
+                else
+                    echo "  ✗ Push failed. Set up remote auth, then re-run:"
+                    echo "    git push -u $REMOTE $MB"
+                fi
+                ;;
+            *)
+                echo "  → Skipped. To push later: \`git push -u $REMOTE $MB\` or"
+                echo "    re-run bootstrap (it'll re-prompt if upstream is still unset)."
+                ;;
+        esac
+    fi
 fi
 
 # ── 6. Stow the framework into ~ ────────────────────────────────────────
@@ -241,17 +279,6 @@ fish -c 'if not functions -q fisher
 end' || echo "  (fisher bootstrap had issues; install manually if you want plugins)"
 
 # ── 8. Manual checklist ─────────────────────────────────────────────────
-UNIV_FILE="$REPO_DIR/home/.config/fish/exported-univ-vars.fish"
-UNIV_LINE=""
-if [ -f "$UNIV_FILE" ]; then
-    UNIV_LINE="
-If you want to restore previously-captured fish universal variables
-(tide / sponge / other plugin config that doesn't live in files), run:
-
-  wrangle --import-univ-vars
-"
-fi
-
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
@@ -265,9 +292,9 @@ Anything else you want this machine to have (tools, dotfiles, GUI apps)
 should be installed/configured normally — \`wrangle\` will detect it and
 walk you through tracking it on the next run.
 
-If you'll be pushing \`$MB\` to a remote, set up auth in whatever way
-you prefer (osxkeychain helper, ssh, gh CLI, etc.). On first push,
-git will prompt with: \`git push --set-upstream origin $MB\`.${UNIV_LINE}
+If you'll be pushing later and haven't set up git auth on this machine
+yet, do that now (osxkeychain helper, ssh, gh CLI, etc.) — git will
+prompt for credentials on the first push otherwise.
 
 Now launching the first \`wrangle\` run...
 ────────────────────────────────────────────────────────────
