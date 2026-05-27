@@ -38,6 +38,8 @@ command -q fnm;    and fnm env --use-on-cd | source
 alias cls clear
 alias h 'cd ~'
 alias htop btop                          # muscle-memory redirect to the better tool
+alias vim nvim                           # muscle-memory redirect to neovim
+alias vi  nvim
 
 # ls family (eza wrappers)
 alias l   'eza --icons'

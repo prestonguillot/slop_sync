@@ -72,8 +72,6 @@ cask "jetbrains-toolbox"
 cask "jordanbaird-ice"
 # Utility for comparing and merging files and directories
 cask "kdiff3"
-# Text editor
-cask "macvim-app"
 # Knowledge base that works on top of a local folder of plain text Markdown files
 cask "obsidian"
 # Control your tools with a few keystrokes
@@ -122,3 +120,5 @@ cask "rancher"
 mas "Okta Verify", id: 490179405
 # Syntax-aware git merge driver
 brew "mergiraf"
+# Ambitious Vim-fork focused on extensibility and agility
+brew "neovim"
