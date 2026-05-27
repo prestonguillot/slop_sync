@@ -17,7 +17,7 @@ The bootstrap script handles the automatable parts and then drops you into a `wr
 Everything below is idempotent. Safe to re-run on a partially-set-up machine; nothing destructive.
 
 1. **Homebrew** — installs it if missing; sources `brew shellenv` for the rest of the script.
-2. **Minimum kit** — `brew install fish stow git mas`. fish is the shell the scripts are written in; stow manages the symlinks; git pinned for clarity (you cloned this repo with it); mas is the only CLI gateway to the Mac App Store, so `brew bundle dump` can see MAS apps (idle if you never install one).
+2. **Minimum kit** — `brew install fish stow git mas`. fish is the shell the scripts are written in; stow manages the symlinks; git pinned for clarity (you cloned this repo with it); mas is the only CLI gateway to the Mac App Store, so `brew bundle dump` can see MAS apps.
 3. **Login shell** — adds `$(brew --prefix)/bin/fish` to `/etc/shells` (sudo), then `chsh -s` to fish. Skipped if already in place.
 4. **Machine-branch.** Prompts for the branch name (default: `personal`). Writes `wrangle.machine-branch` to `.git/config` (per-clone, not pushed). If the branch already exists locally or on origin, switches to it. Otherwise creates a fresh branch — by default from `main`, optionally seeded from another existing machine-branch (a one-time copy of starting state; no persistent relationship).
 5. **Stow framework** — runs `stow --no-folding -t ~ home`. Creates a symlink for the framework's `wrangle_integration.fish` conf.d hook, plus any other tracked files under `home/`.
