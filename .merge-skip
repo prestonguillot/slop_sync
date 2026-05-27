@@ -27,3 +27,4 @@ brew cask "gcloud-cli"
 brew cask "git-credential-manager"
 brew cask "rancher"
 brew mas "Okta Verify", id: 490179405
+brew brew "stacklok/tap/thv"
