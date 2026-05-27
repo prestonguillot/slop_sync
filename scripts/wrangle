@@ -127,7 +127,7 @@ end
 
 # Argparse: declares the UNION of all subcommand flags. We then validate
 # per-subcommand which flags are allowed.
-argparse h/help d/dry-run f/force with-claude suppress-claude no-branch-switch -- $argv
+argparse h/help d/dry-run f/force v/verbose with-claude suppress-claude no-branch-switch -- $argv
 or exit 1
 
 # Per-subcommand flag-validity gate.
@@ -139,10 +139,20 @@ end
 switch $_subcmd
     case sync
         # sync accepts all the configured flags; nothing to reject.
-    case update merge push review-docs help
+    case merge
+        # merge accepts --force (bypasses .merge-skip). Reject everything else.
+        # --verbose is rejected on merge: merge already prints ignore-match
+        # info unconditionally, so the flag would be a confusing no-op.
+        set -q _flag_dry_run;          and _wrangle_reject_flag merge --dry-run
+        set -q _flag_verbose;          and _wrangle_reject_flag merge --verbose
+        set -q _flag_with_claude;      and _wrangle_reject_flag merge --with-claude
+        set -q _flag_suppress_claude;  and _wrangle_reject_flag merge --suppress-claude
+        set -q _flag_no_branch_switch; and _wrangle_reject_flag merge --no-branch-switch
+    case update push review-docs help
         # No flags besides --help.
         set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
         set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
+        set -q _flag_verbose;          and _wrangle_reject_flag $_subcmd --verbose
         set -q _flag_with_claude;      and _wrangle_reject_flag $_subcmd --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag $_subcmd --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag $_subcmd --no-branch-switch
@@ -176,7 +186,7 @@ function _wrangle_help_top
 end
 
 function _wrangle_help_sync
-    echo "Usage: wrangle sync [-d|--dry-run] [-f|--force]"
+    echo "Usage: wrangle sync [-d|--dry-run] [-f|--force] [-v|--verbose]"
     echo "                    [--with-claude|--suppress-claude]"
     echo "                    [--no-branch-switch]"
     echo ""
@@ -186,6 +196,10 @@ function _wrangle_help_sync
     echo "Options:"
     echo "  -d, --dry-run         detect drift, change nothing, no commit, no push"
     echo "  -f, --force           re-ask about paths already in .dotignore"
+    echo "  -v, --verbose         emit a one-line note when an item is silently"
+    echo "                        skipped by .dotignore / .fisherignore /"
+    echo "                        .univignore / .brewignore (or the auto-skip"
+    echo "                        of `_*` private univ-vars)"
     echo "  --with-claude         force-on claude doc review this run (overrides config)"
     echo "  --suppress-claude     force-off claude this run (overrides config)"
     echo "  --no-branch-switch    skip the framework update at the start (stay on current branch)"
@@ -203,7 +217,7 @@ function _wrangle_help_update
 end
 
 function _wrangle_help_merge
-    echo "Usage: wrangle merge <branch>"
+    echo "Usage: wrangle merge <branch> [-f|--force]"
     echo ""
     echo "Per-item adoption of personal-layer content from another machine-branch."
     echo "Walks dotfiles + Brewfile + fish_plugins + univ-vars, comparing the"
@@ -211,12 +225,19 @@ function _wrangle_help_merge
     echo "state. For each item present in <branch> that the current branch"
     echo "doesn't have (or has with different contents), prompts what to do."
     echo ""
+    echo "Prompts for new items: [a]dopt / skip [f]orever / [s]kip / [q]uit."
+    echo "  `skip [f]orever` appends the item to .merge-skip; future merges"
+    echo "  silently skip it. Bypass with --force."
+    echo ""
     echo "Add-only by default: items YOU have that <branch> doesn't are left"
     echo "alone. Items matching the current branch's .ignore files are skipped"
     echo "with a one-line note. Framework files (scripts/, README.md, etc.) are"
     echo "never touched — those flow via PR → main → `wrangle update`."
     echo ""
     echo "Source resolves to origin/<branch> if it exists; otherwise local."
+    echo ""
+    echo "Options:"
+    echo "  -f, --force    bypass .merge-skip (re-prompt items previously marked skip [f]orever)"
 end
 
 function _wrangle_help_push
@@ -281,8 +302,10 @@ end
 
 set -g _dry_run no
 set -g _force no
+set -g _verbose no
 set -q _flag_dry_run; and set -g _dry_run yes
 set -q _flag_force; and set -g _force yes
+set -q _flag_verbose; and set -g _verbose yes
 
 set -l script_dir (dirname (realpath (status -f)))
 set -l repo (git -C $script_dir rev-parse --show-toplevel 2>/dev/null)
@@ -783,6 +806,28 @@ if test "$_subcmd" = merge
     set -l univ_ignores
     test -f $repo/.univignore;    and set univ_ignores    (_wrangle_load_dotignore $repo/.univignore)
 
+    # Load .merge-skip (merge-only skip list, populated by the [f]orever
+    # prompt action). --force bypasses it for the duration of this run.
+    set -l merge_skip_entries
+    if test "$_force" = no; and test -f $repo/.merge-skip
+        set merge_skip_entries (_wrangle_load_dotignore $repo/.merge-skip)
+    end
+
+    # Matcher for .merge-skip entries. Each entry is "<domain> <item>" split
+    # on the first space (so items containing spaces — e.g. `brew "Some App"`
+    # — survive intact). Returns 0 if (domain, item) is listed; 1 otherwise.
+    function _merge_is_skipped
+        set -l d $argv[1]
+        set -l i $argv[2]
+        set -l entries $argv[3..-1]
+        for e in $entries
+            set -l parts (string split -m 1 ' ' -- $e)
+            test (count $parts) -eq 2; or continue
+            test "$parts[1]" = "$d"; and test "$parts[2]" = "$i"; and return 0
+        end
+        return 1
+    end
+
     # Reset counters used in summary.
     set -g _merge_dot_adopted 0
     set -g _merge_brew_adopted 0
@@ -808,6 +853,12 @@ if test "$_subcmd" = merge
             echo "    $GLYPH_DIM skipping "(_name $rel)" (matches .dotignore)"
             continue
         end
+        # Honor .merge-skip (merge-only sticky skips). Only existence is
+        # tracked; content conflicts re-prompt every run by design.
+        if _merge_is_skipped dotfile $path $merge_skip_entries
+            echo "    $GLYPH_DIM skipping "(_name $path)" (matches .merge-skip)"
+            continue
+        end
 
         set -l src_blob (git show $source:$path 2>/dev/null | string collect)
         set -l current_blob
@@ -816,11 +867,11 @@ if test "$_subcmd" = merge
         end
 
         if test -z "$current_blob"
-            # New file: prompt to adopt or skip.
+            # New file: prompt to adopt, skip once, or skip forever.
             echo ""
             echo "    "(_name $path)" (new from source)"
             while true
-                read -P (_keys "    [a]dopt / [s]kip / [q]uit > ") choice
+                read -P (_keys "    [a]dopt / skip [f]orever / [s]kip / [q]uit > ") choice
                 switch $choice
                     case a A adopt
                         mkdir -p (dirname $repo/$path)
@@ -830,13 +881,18 @@ if test "$_subcmd" = merge
                         _log_change "adopted dotfile from $source: $rel"
                         echo "      $GLYPH_OK adopted"
                         break
+                    case f F forever
+                        echo "dotfile $path" >> $repo/.merge-skip
+                        _log_change "skip-forever (.merge-skip): dotfile $path"
+                        echo "      $GLYPH_OK added to .merge-skip"
+                        break
                     case s S skip ''
-                        echo "      $GLYPH_DIM skipped"
+                        echo "      $GLYPH_DIM skipped (will re-surface next merge)"
                         break
                     case q Q quit
                         _wrangle_abort quit
                     case '*'
-                        echo "      ? '$choice' — answer a/s/q"
+                        echo "      ? '$choice' — answer a/f/s/q"
                 end
             end
             set dot_total (math $dot_total + 1)
@@ -898,11 +954,16 @@ if test "$_subcmd" = merge
             end
         end
         test "$brew_skipped" = yes; and continue
+        # Honor .merge-skip (merge-only sticky skips).
+        if _merge_is_skipped brew $line $merge_skip_entries
+            echo "    $GLYPH_DIM skipping "(_name $line)" (matches .merge-skip)"
+            continue
+        end
 
         echo ""
         echo "    "(_name $line)
         while true
-            read -P (_keys "    [a]dopt (append + brew install) / [s]kip / [q]uit > ") choice
+            read -P (_keys "    [a]dopt (append + brew install) / skip [f]orever / [s]kip / [q]uit > ") choice
             switch $choice
                 case a A adopt
                     echo $line >> $repo/Brewfile
@@ -919,13 +980,18 @@ if test "$_subcmd" = merge
                     _log_change "adopted brew from $source: $line"
                     echo "      $GLYPH_OK adopted"
                     break
+                case f F forever
+                    echo "brew $line" >> $repo/.merge-skip
+                    _log_change "skip-forever (.merge-skip): brew $line"
+                    echo "      $GLYPH_OK added to .merge-skip"
+                    break
                 case s S skip ''
-                    echo "      $GLYPH_DIM skipped"
+                    echo "      $GLYPH_DIM skipped (will re-surface next merge)"
                     break
                 case q Q quit
                     _wrangle_abort quit
                 case '*'
-                    echo "      ? '$choice' — answer a/s/q"
+                    echo "      ? '$choice' — answer a/f/s/q"
             end
         end
         set brew_total (math $brew_total + 1)
@@ -947,11 +1013,15 @@ if test "$_subcmd" = merge
             echo "    $GLYPH_DIM skipping "(_name $plugin)" (matches .fisherignore)"
             continue
         end
+        if _merge_is_skipped fisher $plugin $merge_skip_entries
+            echo "    $GLYPH_DIM skipping "(_name $plugin)" (matches .merge-skip)"
+            continue
+        end
 
         echo ""
         echo "    "(_name $plugin)
         while true
-            read -P (_keys "    [a]dopt (append + fisher install) / [s]kip / [q]uit > ") choice
+            read -P (_keys "    [a]dopt (append + fisher install) / skip [f]orever / [s]kip / [q]uit > ") choice
             switch $choice
                 case a A adopt
                     echo $plugin >> $repo/home/.config/fish/fish_plugins
@@ -962,13 +1032,18 @@ if test "$_subcmd" = merge
                     _log_change "adopted fisher plugin from $source: $plugin"
                     echo "      $GLYPH_OK adopted"
                     break
+                case f F forever
+                    echo "fisher $plugin" >> $repo/.merge-skip
+                    _log_change "skip-forever (.merge-skip): fisher $plugin"
+                    echo "      $GLYPH_OK added to .merge-skip"
+                    break
                 case s S skip ''
-                    echo "      $GLYPH_DIM skipped"
+                    echo "      $GLYPH_DIM skipped (will re-surface next merge)"
                     break
                 case q Q quit
                     _wrangle_abort quit
                 case '*'
-                    echo "      ? '$choice' — answer a/s/q"
+                    echo "      ? '$choice' — answer a/f/s/q"
             end
         end
         set fisher_total (math $fisher_total + 1)
@@ -996,11 +1071,16 @@ if test "$_subcmd" = merge
             end
         end
         test "$univ_skipped" = yes; and continue
+        # Honor .merge-skip (merge-only sticky skips).
+        if _merge_is_skipped univ $pat $merge_skip_entries
+            echo "    $GLYPH_DIM skipping "(_name $pat)" (matches .merge-skip)"
+            continue
+        end
 
         echo ""
         echo "    "(_name $pat)" (new pattern from source)"
         while true
-            read -P (_keys "    [a]dopt (append + apply matching vars) / [s]kip / [q]uit > ") choice
+            read -P (_keys "    [a]dopt (append + apply matching vars) / skip [f]orever / [s]kip / [q]uit > ") choice
             switch $choice
                 case a A adopt
                     echo $pat >> $repo/.univexport
@@ -1023,13 +1103,18 @@ if test "$_subcmd" = merge
                     _log_change "adopted univ-var pattern from $source: $pat"
                     echo "      $GLYPH_OK adopted"
                     break
+                case f F forever
+                    echo "univ $pat" >> $repo/.merge-skip
+                    _log_change "skip-forever (.merge-skip): univ $pat"
+                    echo "      $GLYPH_OK added to .merge-skip"
+                    break
                 case s S skip ''
-                    echo "      $GLYPH_DIM skipped"
+                    echo "      $GLYPH_DIM skipped (will re-surface next merge)"
                     break
                 case q Q quit
                     _wrangle_abort quit
                 case '*'
-                    echo "      ? '$choice' — answer a/s/q"
+                    echo "      ? '$choice' — answer a/f/s/q"
             end
         end
         set univ_total (math $univ_total + 1)
@@ -1504,16 +1589,22 @@ set -l candidates
 for f in $HOME/.[A-Za-z0-9]*
     test -L $f; and continue
     set -l rel (string replace -- $HOME/ "" $f)
-    if not _is_skipped $rel; and not _is_tracked $rel
-        set -a candidates $rel
+    if _is_skipped $rel
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $rel)" (matches .dotignore)"
+        continue
     end
+    _is_tracked $rel; and continue
+    set -a candidates $rel
 end
 for f in $HOME/.config/*
     test -L $f; and continue
     set -l rel (string replace -- $HOME/ "" $f)
-    if not _is_skipped $rel; and not _is_tracked $rel
-        set -a candidates $rel
+    if _is_skipped $rel
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $rel)" (matches .dotignore)"
+        continue
     end
+    _is_tracked $rel; and continue
+    set -a candidates $rel
 end
 
 if test (count $candidates) -eq 0
@@ -1609,13 +1700,19 @@ else
     set -l plugin_added
     for p in $fisher_listed
         contains -- $p $plugins_in_file; and continue
-        contains -- $p $fisher_ignores; and continue
+        if contains -- $p $fisher_ignores
+            test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $p)" (matches .fisherignore)"
+            continue
+        end
         set -a plugin_added $p
     end
     set -l plugin_missing
     for p in $plugins_in_file
         contains -- $p $fisher_listed; and continue
-        contains -- $p $fisher_ignores; and continue
+        if contains -- $p $fisher_ignores
+            test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $p)" (matches .fisherignore)"
+            continue
+        end
         set -a plugin_missing $p
     end
 
@@ -1928,23 +2025,31 @@ set -l drift_standalone
 set -l auto_skipped_private 0
 
 for name in (set -U -L | awk '{print $1}')
-    # Skip if matches any allowlist pattern (already tracked)
+    # Skip if matches any allowlist pattern (already tracked) — silent always,
+    # this is the "expected" path (tracked vars don't need re-prompting).
     set -l skip no
     for p in $allowed_patterns
         string match -q $p $name; and set skip yes; and break
     end
     test "$skip" = yes; and continue
-    # Skip if matches any ignore pattern (already ignored)
+    # Skip if matches any ignore pattern (already ignored). Surface under --verbose.
+    set -l matched_ignore_pat
     for p in $ignored_patterns
-        string match -q $p $name; and set skip yes; and break
+        if string match -q $p $name
+            set skip yes; set matched_ignore_pat $p; break
+        end
     end
-    test "$skip" = yes; and continue
+    if test "$skip" = yes
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $name)" (matches .univignore: $matched_ignore_pat)"
+        continue
+    end
     # Auto-skip fish's private/internal convention: names starting with `_`
     # (fish builtins use `__name`, plugins use `_pluginname_*` for caches).
     # Explicit allowlist matches above still win, so you can opt in by
     # adding an exact name (e.g. `_foo`) to .univexport manually.
     if string match -q '_*' $name
         set auto_skipped_private (math $auto_skipped_private + 1)
+        test "$_verbose" = yes; and echo "  $GLYPH_DIM skipping "(_name $name)" (auto-skip: private/internal `_*` convention)"
         continue
     end
 
@@ -2086,9 +2191,22 @@ if not command -q brew
     echo "  brew not installed; skipping."
 else
     set -l tmp_dump (mktemp)
+    set -l tmp_dump_stderr (mktemp)
     _spinner_start "Scanning installed brew state…"
-    $repo/scripts/dump-brewfile $tmp_dump 2>/dev/null
+    set -l dump_args $tmp_dump
+    test "$_verbose" = yes; and set dump_args --verbose $dump_args
+    $repo/scripts/dump-brewfile $dump_args 2>$tmp_dump_stderr
     _spinner_stop
+    if test "$_verbose" = yes; and test -s $tmp_dump_stderr
+        # dump-brewfile --verbose emits one "<line>\t(matches .brewignore: <pat>)"
+        # line to stderr per filtered entry. Surface each in our own DIM format.
+        while read -l ln
+            set -l parts (string split -m 1 \t -- $ln)
+            test (count $parts) -eq 2; or continue
+            echo "  $GLYPH_DIM skipping "(_name $parts[1])" $parts[2]"
+        end < $tmp_dump_stderr
+    end
+    rm -f $tmp_dump_stderr
 
     set -l brewfile_path $repo/Brewfile
     set -l tracked_entries
