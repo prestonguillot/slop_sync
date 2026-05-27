@@ -50,8 +50,6 @@ brew "rustup"
 brew "sbt"
 # Organize software neatly under a single directory tree (e.g. /usr/local)
 brew "stow"
-# Simplified and community-driven man pages
-brew "tldr"
 # Display directories as trees (with optional color/HTML output)
 brew "tree"
 # Network analyzer and capture tool - without graphical user interface
@@ -80,8 +78,6 @@ cask "jetbrains-toolbox"
 cask "jordanbaird-ice"
 # Utility for comparing and merging files and directories
 cask "kdiff3"
-# Text editor
-cask "macvim-app"
 # Knowledge base that works on top of a local folder of plain text Markdown files
 cask "obsidian"
 # Control your tools with a few keystrokes
