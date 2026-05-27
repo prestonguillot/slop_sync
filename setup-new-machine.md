@@ -108,6 +108,6 @@ The repo itself is untouched. Re-stow any time with `stow --no-folding -t ~ home
 For the full branch-model explanation see **[README.md → Branch model](README.md#branch-model)**. Quick summary:
 
 - **`main`** is framework only — wrangle/bootstrap scripts, ignore-list templates, tests, docs. Shared and semver-tagged.
-- **Your machine-branch** (default `personal`) is your machine state — `.gitconfig`, vim configs, Brewfile, plugin lists, captured universals. Each machine owns one. Machines are peers, not a hierarchy.
+- **Your machine-branch** (default `personal`) is your machine state — `.gitconfig`, vim configs, Brewfile, plugin lists, captured universals. Each machine owns one and they diverge freely.
 
-Wrangle's Pass 1 at the start of every `wrangle sync` merges `origin/main` into your machine-branch, so framework updates flow in automatically. You never need to merge back to `main`. To cross-pollinate personal-layer content between your own machines, use `wrangle merge <branch>` — it walks each domain and prompts per item. If you want to skip the framework update for one sync run, use `wrangle sync --no-branch-switch`.
+Wrangle's Pass 1 at the start of every `wrangle sync` merges `origin/main` into your machine-branch, so framework updates flow in automatically. To cross-pollinate personal-layer content between your own machines, use `wrangle merge <branch>` — it walks each domain and prompts per item. If you want to skip the framework update for one sync run, use `wrangle sync --no-branch-switch`.
