@@ -46,6 +46,16 @@ fnm default lts-latest
 
 Sign into the App Store app with the Apple ID that originally purchased my MAS apps (currently just Fantastical, `id: 975937182`). `brew bundle install` will skip MAS lines for unowned apps with a warning rather than failing.
 
+## Neovim plugin bootstrap (LazyVim)
+
+`home/.config/nvim/` is a LazyVim config. On first run after stow, neovim bootstraps lazy.nvim (git clone) and then installs all plugins — this can take 30–60 seconds and the screen will show install progress. Just let it finish; subsequent launches are normal.
+
+```fish
+nvim
+```
+
+When the lazy.nvim UI closes and the normal editor appears, plugins are installed.
+
 ## Fisher plugins
 
 `fish_plugins` (tracked in the repo, symlinked into `~/.config/fish/`) lists `jorgebucaran/fisher` itself plus `fzf.fish`, `autopair.fish`, and `sponge`. Bootstrap installs fisher but doesn't auto-install the plugins. One-liner:
