@@ -99,3 +99,5 @@ cask "font-symbols-only-nerd-font"
 # Video game digital distribution service
 cask "steam"
 brew "mergiraf"
+brew "tlrc"
+brew "neovim"
