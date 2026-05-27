@@ -10,3 +10,8 @@
 #     univ    → the .univexport pattern (e.g. tide_*)
 #
 # Comments (#) and blank lines are ignored.
+brew cask "discord"
+brew cask "firefox"
+brew cask "whatsapp"
+brew mas "Fantastical", id: 975937182
+brew cask "steam"
