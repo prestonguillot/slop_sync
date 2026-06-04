@@ -60,8 +60,6 @@ brew "zoxide"
 cask "betterdisplay"
 # Open source IDE for exploring and testing APIs
 cask "bruno"
-# Terminal-based AI coding assistant
-cask "claude-code"
 cask "font-hack"
 cask "font-monaspace"
 # Terminal emulator that uses platform-native UI and GPU acceleration
