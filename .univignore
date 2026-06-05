@@ -3,3 +3,4 @@
 # Typically populated by answering [i]gnore forever in a wrangle session.
 fish_*
 VIRTUAL_*
+CIRCLE_*
