@@ -62,12 +62,13 @@ For the per-domain detail on what each pass does, see **[README.md → How track
 
 ## Daily use
 
-Four subcommands cover the everyday loop:
+Five subcommands cover the everyday loop:
 
 - `wrangle sync` — the main one: detect drift across all domains, prompt per-item, commit, optionally push.
 - `wrangle update` — fetch origin and merge `origin/main` into your machine-branch (framework updates).
 - `wrangle merge <branch>` — per-item adopt personal-layer content from another machine-branch (Brewfile entries, dotfiles, fisher plugins, univ-var patterns) into the current one. Per-item prompts let you `[a]dopt`, `[s]kip` once, or `skip [f]orever` (writes to `.merge-skip`; bypass with `wrangle merge <branch> --force`).
 - `wrangle push` — push your current branch's commits.
+- `wrangle status` — read-only "where do I stand?" check. Fetches origin, reports whether `origin/main` has updates waiting (i.e. what `wrangle update` would do), lists peer machine-branches with last-updated timestamps (i.e. candidates for `wrangle merge`), and runs `wrangle sync --dry-run` to surface local drift. Mutates no local state.
 
 `wrangle help` lists the rest (env vars, git config keys, less-frequent subcommands like `review-docs`). `wrangle help <subcommand>` (or `wrangle <subcommand> --help`) describes a single subcommand's flags.
 

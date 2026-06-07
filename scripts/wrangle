@@ -117,7 +117,7 @@ end
 
 # Reject unknown subcommands.
 switch $_subcmd
-    case sync update merge push review-docs help
+    case sync update merge push review-docs status help
         # known — handled below
     case '*'
         echo "wrangle: unknown subcommand: $_subcmd" >&2
@@ -148,7 +148,7 @@ switch $_subcmd
         set -q _flag_with_claude;      and _wrangle_reject_flag merge --with-claude
         set -q _flag_suppress_claude;  and _wrangle_reject_flag merge --suppress-claude
         set -q _flag_no_branch_switch; and _wrangle_reject_flag merge --no-branch-switch
-    case update push review-docs help
+    case update push review-docs status help
         # No flags besides --help.
         set -q _flag_dry_run;          and _wrangle_reject_flag $_subcmd --dry-run
         set -q _flag_force;            and _wrangle_reject_flag $_subcmd --force
@@ -167,6 +167,7 @@ function _wrangle_help_top
     echo "  update                fetch + merge origin/main into the current machine-branch"
     echo "  merge <branch>        per-item adopt personal-layer content from another machine-branch"
     echo "  push                  push the current branch to origin (preview first)"
+    echo "  status                fetch + report behind-origin/main, peer machine-branches, drift dry-run"
     echo "  review-docs           skip drift; have claude review docs against recent commits"
     echo "  help [<subcmd>]       this message, or detailed help for a subcommand"
     echo ""
@@ -263,6 +264,23 @@ function _wrangle_help_review_docs
     echo "(if you ran this subcommand, you opted in for this run)."
 end
 
+function _wrangle_help_status
+    echo "Usage: wrangle status"
+    echo ""
+    echo "Read-only summary of where this clone stands. Fetches origin first so"
+    echo "every section reflects remote truth, then reports:"
+    echo ""
+    echo "  - Update status: whether the current machine-branch is up to date"
+    echo "    with origin/main (i.e. what `wrangle update` would do)."
+    echo "  - Peer machine-branches: every other origin/<branch> and when it was"
+    echo "    last updated (i.e. candidates for `wrangle merge <branch>`)."
+    echo "  - Sync dry-run: surfaces local drift across all domains without"
+    echo "    committing or pushing (same as `wrangle sync --dry-run`)."
+    echo ""
+    echo "Mutates nothing locally. The fetch updates origin/* refs but not your"
+    echo "machine-branch."
+end
+
 # Dispatch help if requested.
 if test "$_subcmd" = help
     if test (count $argv) -eq 0
@@ -274,6 +292,7 @@ if test "$_subcmd" = help
             case merge;                 _wrangle_help_merge
             case push;                  _wrangle_help_push
             case review-docs;           _wrangle_help_review_docs
+            case status;                _wrangle_help_status
             case '*'
                 echo "wrangle: unknown subcommand: $argv[1]" >&2
                 exit 2
@@ -289,6 +308,7 @@ if set -q _flag_help
         case merge;                 _wrangle_help_merge
         case push;                  _wrangle_help_push
         case review-docs;           _wrangle_help_review_docs
+        case status;                _wrangle_help_status
     end
     exit 0
 end
@@ -1223,6 +1243,75 @@ Recent commit history (last 15 commits):
         echo "  $GLYPH_WARN claude exited non-zero ($rv)."
     end
     exit $rv
+end
+
+# ─── status ──────────────────────────────────────────────────────────────
+# `wrangle status` — read-only diagnostic. Fetches origin once so the
+# update-check and peer-branch listing both reflect remote truth, then runs
+# a dry-run sync to surface local drift. Mutates no local refs.
+if test "$_subcmd" = status
+    _header "Status"
+    pushd $repo >/dev/null
+
+    _with_spinner "Fetching origin…" git fetch origin --prune 2>/dev/null
+
+    set -l current (git rev-parse --abbrev-ref HEAD)
+
+    # ── Update status (vs origin/main) ────────────────────────────────
+    echo ""
+    _subheader "Update status"
+    if not git rev-parse --verify --quiet origin/main >/dev/null
+        echo "    $GLYPH_DIM no origin/main on this remote; nothing to update from"
+    else
+        set -l ahead (git rev-list --count "$current..origin/main" 2>/dev/null)
+        test -z "$ahead"; and set ahead 0
+        if test "$ahead" -eq 0
+            echo "    $GLYPH_OK "(_name $current)" up to date with "(_name origin/main)
+        else
+            echo "    "(_n $ahead)" commit(s) on "(_name origin/main)" not yet in "(_name $current)":"
+            git --no-pager log --color=always \
+                --pretty='      %C(yellow)%h%Creset %s %C(dim)(%cr)%Creset' \
+                "$current..origin/main"
+            echo ""
+            echo "    Run "(_name "wrangle update")" to merge them in."
+        end
+    end
+
+    # ── Peer machine-branches ─────────────────────────────────────────
+    echo ""
+    _subheader "Peer machine-branches"
+    set -l peers
+    # origin/HEAD's short-form is bare "origin" (git collapses the symbolic
+    # ref), so we filter against the full refname rather than the short form.
+    for line in (git for-each-ref refs/remotes/origin --format='%(refname) %(refname:short)' 2>/dev/null)
+        set -l full (string split -m 1 ' ' -- $line)[1]
+        set -l short (string split -m 1 ' ' -- $line)[2]
+        test "$full" = refs/remotes/origin/HEAD; and continue
+        test "$short" = origin/main;             and continue
+        test "$short" = "origin/$current";       and continue
+        set -a peers $short
+    end
+    if test (count $peers) -eq 0
+        echo "    $GLYPH_DIM no other branches on origin"
+    else
+        for ref in $peers
+            set -l rel (git log -1 --format='%cr' $ref 2>/dev/null)
+            set -l iso (git log -1 --format='%cs' $ref 2>/dev/null)
+            echo "    "(_name $ref)" $GLYPH_DIM last updated $rel ($iso)"
+        end
+        echo ""
+        echo "    Run "(_name "wrangle merge <branch>")" to adopt content from one of these."
+    end
+
+    popd >/dev/null
+
+    # ── Sync dry-run ──────────────────────────────────────────────────
+    # Re-exec ourselves with `sync --dry-run --no-branch-switch`. The
+    # `--no-branch-switch` skips Pass 1 (framework update) because we
+    # already reported its outcome above and don't want to fetch twice.
+    echo ""
+    fish $script_dir/wrangle sync --dry-run --no-branch-switch
+    exit $status
 end
 
 # `$_claude_opt` (on/off) is computed later — right after the first-run

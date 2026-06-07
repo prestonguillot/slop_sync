@@ -29,7 +29,7 @@ set -l dash_dash_help_help ($wrangle --help)
 test "$dash_dash_help_help" = "$top_help"
 @test "wrangle --help prints same output as `wrangle help`" $status -eq 0
 
-for subcmd in sync update merge review-docs
+for subcmd in sync update merge review-docs status
     string match -q "*$subcmd*" -- "$top_help"
     @test "top-level help lists subcommand: $subcmd" $status -eq 0
 end
@@ -148,3 +148,23 @@ $wrangle push --dry-run 2>/dev/null
 set -l push_help_str ($wrangle push --help | string join \n)
 not string match -q '*\\`*' -- "$push_help_str"
 @test "push help has no literal backslash-backticks" $status -eq 0
+
+# ─── status subcommand surface ──────────────────────────────────────────
+
+string match -q "*status*" -- "$top_help"
+@test "top-level help lists status subcommand" $status -eq 0
+
+set -l status_help ($wrangle status --help)
+string match -q "*Read-only summary*" -- "$status_help"
+@test "status --help describes what status does" $status -eq 0
+
+# status doesn't take any flags besides --help.
+$wrangle status --dry-run 2>/dev/null
+@test "status rejects --dry-run (sync-only flag)" $status -ne 0
+$wrangle status --force 2>/dev/null
+@test "status rejects --force (sync-only flag)" $status -ne 0
+
+# Backtick-rendering test for status help.
+set -l status_help_str ($wrangle status --help | string join \n)
+not string match -q '*\\`*' -- "$status_help_str"
+@test "status help has no literal backslash-backticks" $status -eq 0
