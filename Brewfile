@@ -62,8 +62,6 @@ brew "zoxide"
 cask "betterdisplay"
 # Open source IDE for exploring and testing APIs
 cask "bruno"
-# Terminal-based AI coding assistant
-cask "claude-code"
 # Voice and text chat software
 cask "discord"
 # Web browser
@@ -97,3 +95,4 @@ cask "steam"
 brew "mergiraf"
 brew "tlrc"
 brew "neovim"
+npm "@anthropic-ai/claude-code"
