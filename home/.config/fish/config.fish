@@ -28,6 +28,11 @@ for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew
 end
 set -e _brew
 
+# Install cask apps into ~/Applications (user-owned) instead of /Applications
+# (root:admin) so GUI-app cask upgrades don't require admin elevation. Note:
+# casks with a pkg/system-extension stanza (e.g. wireshark) still need root.
+set -gx HOMEBREW_CASK_OPTS "--appdir=$HOME/Applications"
+
 command -q zoxide; and zoxide init fish --cmd cd | source
 command -q direnv; and direnv hook fish | source
 command -q fnm;    and fnm env --use-on-cd | source
@@ -40,6 +45,11 @@ alias h 'cd ~'
 alias htop btop                          # muscle-memory redirect to the better tool
 alias vim nvim                           # muscle-memory redirect to neovim
 alias vi  nvim
+
+# db (local MySQL: ck deployer to start, docker to tear the container down)
+alias dbstart 'ck db mysql start --deployer'
+alias dbkill  'docker kill mysql-local; docker rm mysql-local'
+alias dbcycle 'dbkill; dbstart'
 
 # ls family (eza wrappers)
 alias l   'eza --icons'
@@ -96,3 +106,7 @@ function tmi --description 'tldr first, real man as fallback'
     end
     command man $argv
 end
+
+### MANAGED BY RANCHER DESKTOP START (DO NOT EDIT)
+set --export --prepend PATH "/Users/pguillot/.rd/bin"
+### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)

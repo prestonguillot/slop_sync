@@ -79,3 +79,4 @@ id_*                    # SSH keys via the conventional naming
 .netrwhist              # vim netrw history
 .config/raycast
 .config/wireshark
+.config/jgit           # JGit appends filesystem-timing entries at runtime
