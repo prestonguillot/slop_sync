@@ -47,3 +47,5 @@
 	driver = mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L
 [mergetool "kdiff3"]
 	cmd = kdiff3 --L1 \"$BASE\" --L2 \"$LOCAL\" --L3 \"$REMOTE\" -o \"$MERGED\" \"$BASE\" \"$LOCAL\" \"$REMOTE\"
+[init]
+	defaultBranch = main
