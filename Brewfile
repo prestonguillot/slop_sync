@@ -114,9 +114,16 @@ cask "gcloud-cli"
 # Cross-platform Git credential storage for multiple hosting providers
 cask "git-credential-manager"
 # Kubernetes and container management on the desktop
-cask "rancher"
+# Pinned to /Applications (overriding the global ~/Applications appdir default): Rancher's
+# privileged networking helper / sudoers fragment is path-bound, and a ~/Applications install
+# orphaned it after a move — breaking socket_vmnet networking. Keep it where the helper expects.
+cask "rancher", args: { appdir: "/Applications" }
 mas "Okta Verify", id: 490179405
 # Syntax-aware git merge driver
 brew "mergiraf"
 # Ambitious Vim-fork focused on extensibility and agility
 brew "neovim"
+# Enables you to reproduce the CircleCI environment locally
+brew "circleci"
+# Interpreted, interactive, object-oriented programming language
+brew "python@3.12"
