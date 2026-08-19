@@ -105,6 +105,16 @@ mergiraf install --global
 
 This adds the driver config to `~/.gitconfig` and sets up `.gitattributes` patterns. After that, git will automatically use mergiraf when merging supported file types instead of the default line-based driver.
 
+## CircleCI CLI (`circleci`)
+
+`circleci` needs an API token before most subcommands (e.g. `circleci config validate`, `circleci local execute`) will work against your projects. After install:
+
+```fish
+circleci setup
+```
+
+It prompts for a CircleCI API token (generate one at https://app.circleci.com/settings/user/tokens) and, optionally, a custom API endpoint (leave default for circleci.com). Config is written to `~/.circleci/cli.yml`.
+
 ## Fisher plugins
 
 `fish_plugins` (tracked in the repo, symlinked into `~/.config/fish/`) lists `jorgebucaran/fisher` itself plus `fzf.fish`, `autopair.fish`, and `sponge`. Bootstrap installs fisher but doesn't auto-install the plugins. One-liner:
