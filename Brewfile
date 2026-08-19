@@ -127,3 +127,5 @@ brew "neovim"
 brew "circleci"
 # Interpreted, interactive, object-oriented programming language
 brew "python@3.12"
+# Chromium-based web browser
+cask "helium-browser"
