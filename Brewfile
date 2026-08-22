@@ -96,3 +96,5 @@ brew "mergiraf"
 brew "tlrc"
 brew "neovim"
 npm "@anthropic-ai/claude-code"
+# Chromium-based web browser
+cask "helium-browser"

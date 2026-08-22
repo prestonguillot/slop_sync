@@ -91,7 +91,12 @@ end
 # tldr-then-man: try tldr first, fall back to real man if no tldr page.
 # Named `tmi` so plain `man` stays as the real man — no surprise shadowing.
 function tmi --description 'tldr first, real man as fallback'
-    if command -q tldr; and command tldr $argv 2>/dev/null
+    # tldr's auto color detection also looks at stderr, and `2>/dev/null` (which
+    # hides its page-not-found error) makes that look like a pipe. Ask for color
+    # explicitly whenever our own stdout is a terminal.
+    set -l color auto
+    isatty stdout; and set color always
+    if command -q tldr; and command tldr --color $color $argv 2>/dev/null
         return 0
     end
     command man $argv
