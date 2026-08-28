@@ -129,3 +129,5 @@ brew "circleci"
 brew "python@3.12"
 # Chromium-based web browser
 cask "helium-browser"
+# JDK from the Eclipse Foundation (Adoptium)
+cask "temurin@17"
