@@ -98,3 +98,7 @@ brew "neovim"
 npm "@anthropic-ai/claude-code"
 # Chromium-based web browser
 cask "helium-browser"
+# Game client
+cask "gog-galaxy"
+# Network monitoring and troubleshooting tool
+cask "wifiman"
