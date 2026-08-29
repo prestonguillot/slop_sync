@@ -119,6 +119,8 @@ scripts/
                  `status`), _nag_state (pull-nag state file format).
 
 test/            Fishtape tests covering wrangle CLI surface, scan-secrets, dump-brewfile, bump-version.
+  helpers/       Shared fixture construction. Not collected by `fishtape test/*.fish`
+                 (that glob doesn't recurse), so it's sourceable without being run.
 
 .github/workflows/
   test.yml       Runs the test suite on every push/PR.
