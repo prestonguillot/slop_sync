@@ -7,27 +7,17 @@
 # HOME so universals + state files stay isolated.
 
 set -l repo_root (dirname (realpath (status -f)))/..
+source $repo_root/test/helpers/fixture.fish
 
 # Build a minimal sync-capable fixture. Returns: <fix> <home_dir>.
 function _wrangle_verbose_fixture --inherit-variable repo_root
     set -l fix (mktemp -d)
     set -l home_dir (mktemp -d)
 
-    git -C $fix init -q -b main
-    git -C $fix config user.email test@test.local
-    git -C $fix config user.name "verbose-test"
-
-    mkdir -p $fix/scripts $fix/home/.config/fish/conf.d
-    cp $repo_root/scripts/wrangle $fix/scripts/
-    cp $repo_root/scripts/_skiplist.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_parse.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_helpers.fish $fix/scripts/
-    cp $repo_root/scripts/_commit_msg.fish $fix/scripts/
-    cp $repo_root/scripts/scan-secrets $fix/scripts/
-    cp $repo_root/scripts/dump-brewfile $fix/scripts/
-
-    touch $fix/.dotignore $fix/.brewignore $fix/.fisherignore $fix/.univexport $fix/.univignore
-    touch $fix/Brewfile $fix/home/.config/fish/fish_plugins $fix/home/.config/fish/conf.d/.gitkeep
+    _wrangle_fixture_init_repo $fix "verbose-test" main
+    _wrangle_fixture_install_scripts $fix $repo_root
+    # Blank ignore files: these tests write their own entries per domain.
+    _wrangle_fixture_seed_files $fix $repo_root empty
 
     git -C $fix add -A
     git -C $fix commit -q -m "seed"
