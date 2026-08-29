@@ -15,6 +15,7 @@
 # as origin so both remote-tracking comparisons have real data.
 
 set -l repo_root (dirname (realpath (status -f)))/..
+source $repo_root/test/helpers/fixture.fish
 
 # Build a fixture with a real origin. Echoes three paths on stdout:
 # fixture repo, fake home, bare origin.
@@ -25,23 +26,9 @@ function _wrangle_status_fixture --inherit-variable repo_root
 
     git -C $origin init -q --bare -b main
 
-    git -C $fix init -q -b main
-    git -C $fix config user.email test@test.local
-    git -C $fix config user.name "status-sections-test"
-
-    mkdir -p $fix/scripts $fix/home/.config/fish/conf.d
-    cp $repo_root/scripts/wrangle $fix/scripts/
-    cp $repo_root/scripts/_skiplist.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_parse.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_helpers.fish $fix/scripts/
-    cp $repo_root/scripts/_commit_msg.fish $fix/scripts/
-    cp $repo_root/scripts/_drift.fish $fix/scripts/
-    cp $repo_root/scripts/_nag_state.fish $fix/scripts/
-    cp $repo_root/scripts/scan-secrets $fix/scripts/
-    cp $repo_root/scripts/dump-brewfile $fix/scripts/
-
-    touch $fix/.dotignore $fix/.brewignore $fix/.fisherignore $fix/.univexport $fix/.univignore
-    touch $fix/Brewfile $fix/home/.config/fish/fish_plugins $fix/home/.config/fish/conf.d/.gitkeep
+    _wrangle_fixture_init_repo $fix "status-sections-test" main
+    _wrangle_fixture_install_scripts $fix $repo_root
+    _wrangle_fixture_seed_files $fix $repo_root empty
 
     git -C $fix add -A
     git -C $fix commit -q -m "fixture seed"

@@ -11,6 +11,7 @@
 # memory note `feedback_tests_switch_branches.md`.
 
 set -l repo_root (dirname (realpath (status -f)))/..
+source $repo_root/test/helpers/fixture.fish
 
 # Build a fresh fixture: clone scripts/ + minimal repo skeleton into a
 # new git repo with `personal` checked out. Echoes two paths on stdout:
@@ -19,33 +20,11 @@ function _wrangle_fixture --inherit-variable repo_root
     set -l fix (mktemp -d)
     set -l home_dir (mktemp -d)
 
-    git -C $fix init -q
-    git -C $fix config user.email test@test.local
-    git -C $fix config user.name "wrangle-behavior-test"
-
-    # Copy the framework: scripts/, the four ignore files (so wrangle has
-    # something to read), an empty home/ tree, and an empty Brewfile.
-    mkdir -p $fix/scripts $fix/home/.config/fish/conf.d $fix/test
-    cp $repo_root/scripts/wrangle $fix/scripts/
-    cp $repo_root/scripts/_skiplist.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_parse.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_helpers.fish $fix/scripts/
-    cp $repo_root/scripts/_commit_msg.fish $fix/scripts/
-    cp $repo_root/scripts/_drift.fish $fix/scripts/
-    cp $repo_root/scripts/_nag_state.fish $fix/scripts/
-    cp $repo_root/scripts/scan-secrets $fix/scripts/
-    cp $repo_root/scripts/dump-brewfile $fix/scripts/
-
-    # Seed the ignore files (templates from main; copying real ones keeps
-    # behavior aligned with what wrangle actually runs against on a real repo).
-    cp $repo_root/.dotignore     $fix/ 2>/dev/null; or touch $fix/.dotignore
-    cp $repo_root/.brewignore    $fix/ 2>/dev/null; or touch $fix/.brewignore
-    cp $repo_root/.fisherignore  $fix/ 2>/dev/null; or touch $fix/.fisherignore
-    cp $repo_root/.univexport    $fix/ 2>/dev/null; or touch $fix/.univexport
-    cp $repo_root/.univignore    $fix/ 2>/dev/null; or touch $fix/.univignore
-    touch $fix/Brewfile
-    touch $fix/home/.config/fish/fish_plugins
-    touch $fix/home/.config/fish/conf.d/.gitkeep
+    _wrangle_fixture_init_repo $fix "wrangle-behavior-test" main
+    _wrangle_fixture_install_scripts $fix $repo_root
+    # `real` ignore files (the repo's own templates) so behavior here matches
+    # what wrangle does against an actual clone.
+    _wrangle_fixture_seed_files $fix $repo_root real
 
     git -C $fix add -A
     git -C $fix commit -q -m "fixture seed"
