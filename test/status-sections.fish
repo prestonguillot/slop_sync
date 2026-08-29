@@ -124,3 +124,32 @@ test (git -C $fix2 rev-parse --abbrev-ref HEAD) = personal
 @test "status does NOT switch branches" $status -eq 0
 
 rm -rf $fix2 $home2 $origin2
+
+# ─── Drift unit declares its mode ────────────────────────────────────────
+# _wrangle_detect_drift takes an explicit mode rather than reading the
+# ambient $_dry_run global. Every gate inside tests for `report`, so a
+# missing or misspelled mode would fall through to the prompting-and-
+# writing branches. It must fail closed instead.
+
+set -l f3 (_wrangle_status_fixture)
+set -l fix3 $f3[1]; set -l home3 $f3[2]; set -l origin3 $f3[3]
+
+set -l probe (mktemp)
+echo "
+set -g GLYPH_ERR X
+source $fix3/scripts/_drift.fish
+_wrangle_detect_drift
+echo \"rv=\$status\"
+_wrangle_detect_drift bogus
+echo \"rv=\$status\"
+" > $probe
+set -l probe_out (env HOME=$home3 fish $probe 2>&1 | string join \n)
+
+string match -q "*rv=2*" -- "$probe_out"
+@test "_wrangle_detect_drift rejects a missing mode" $status -eq 0
+
+string match -q "*unknown mode 'bogus'*" -- "$probe_out"
+@test "_wrangle_detect_drift rejects an unknown mode by name" $status -eq 0
+
+rm -f $probe
+rm -rf $fix3 $home3 $origin3
