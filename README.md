@@ -112,6 +112,11 @@ scripts/
   scan-secrets   Fish. Pre-commit safety net for high-confidence secret patterns.
   bump-version   Bash. Semver-tags main. Called by the release workflow, rarely manually.
   run-tests      Bash. Wraps fishtape over test/*.fish.
+  _*.fish        Fish. Units sourced by wrangle, split out so more than one
+                 subcommand (and the tests) can use them: _skiplist (ignore-file
+                 parsing), _univ_parse / _univ_helpers (universals), _commit_msg
+                 (commit messages), _drift (Passes 5-8, shared by `sync` and
+                 `status`), _nag_state (pull-nag state file format).
 
 test/            Fishtape tests covering wrangle CLI surface, scan-secrets, dump-brewfile, bump-version.
 
