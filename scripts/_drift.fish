@@ -17,9 +17,22 @@
 #
 # CONTRACT
 #
-# Reads these globals set by the caller before invocation:
+# _wrangle_detect_drift <mode>, following the _wrangle_do_push precedent of
+# naming the behavior rather than reading an ambient flag:
+#
+#   report        detect and print; never prompt, never write.
+#                 `wrangle status` and `wrangle sync --dry-run`.
+#   interactive   prompt per item and apply what the user chooses.
+#                 `wrangle sync`.
+#
+# The distinction used to ride on the global $_dry_run, which meant two
+# different things depending on who was calling: "show me what you'd do"
+# for `sync --dry-run`, but "you are not sync, do not mutate" on the status
+# path. Naming the mode gives each caller one contract to declare.
+#
+# Also reads these globals, set by the caller before invocation:
 #   $repo $home_subdir $ignore_file $brew_ignore_file   (paths)
-#   $_dry_run $_force $_verbose                          (mode flags)
+#   $_force $_verbose                                    (user flags)
 # Appends one line per user-visible change to $_changes, via _log_change.
 # Depends on the palette/spinner helpers and the _skiplist / _univ_parse /
 # _univ_helpers parsers, all defined in scripts/wrangle before this is
@@ -30,7 +43,16 @@
 # nothing in report mode, so keeping them out here means status cannot
 # reach them at all — no gate required.
 
-function _wrangle_detect_drift
+function _wrangle_detect_drift --argument-names mode
+    # Reject an unknown or missing mode loudly. Every gate below tests for
+    # `report`, so an empty or misspelled $mode would fall through to the
+    # prompting-and-writing branches — the one failure this unit must never
+    # have. Fail closed instead.
+    if test "$mode" != report; and test "$mode" != interactive
+        echo "$GLYPH_ERR _wrangle_detect_drift: unknown mode '$mode' (expected 'report' or 'interactive')" >&2
+        return 2
+    end
+
     # Skiplist + univ-var parsers are sourced from scripts/_*.fish at the top.
     # `--force` bypasses .dotignore entirely (the pre-commit secret-scan is the
     # secondary safety net).
@@ -128,7 +150,7 @@ function _wrangle_detect_drift
         echo "  $GLYPH_OK no untracked dotfiles in scope"
     else
         set -l mode_hint
-        test "$_dry_run" = yes; and set mode_hint " (dry run — no prompts)"
+        test "$mode" = report; and set mode_hint " (dry run — no prompts)"
         test "$_force" = yes; and set mode_hint "$mode_hint (--force: ignore list bypassed)"
         echo "  Found "(_n (count $candidates))" untracked path(s)$mode_hint."
     end
@@ -138,7 +160,7 @@ function _wrangle_detect_drift
 
     for rel in $candidates
         _show $rel
-        if test "$_dry_run" = yes
+        if test "$mode" = report
             continue
         end
         # Prompt + responses sit at 4sp to nest visually under the _show subheader.
@@ -169,7 +191,7 @@ function _wrangle_detect_drift
 
     # Summary: only print a counts line when work actually happened (or in dry-run);
     # otherwise the "no untracked dotfiles" ok-line above already conveys "all good".
-    if test "$_dry_run" = yes; and test (count $candidates) -gt 0
+    if test "$mode" = report; and test (count $candidates) -gt 0
         echo "  $GLYPH_DIM dry run — "(_n (count $candidates))" untracked path(s) listed, nothing changed"
     else if test $tracked_count -gt 0; or test $ignored_count -gt 0
         echo "  $GLYPH_OK "(_n $tracked_count)" tracked, "(_n $ignored_count)" newly ignored"
@@ -247,7 +269,7 @@ function _wrangle_detect_drift
             for plugin in $plugin_added
                 echo ""
                 echo "    "(_name $plugin)
-                if test "$_dry_run" = yes
+                if test "$mode" = report
                     continue
                 end
                 while true
@@ -284,7 +306,7 @@ function _wrangle_detect_drift
             for plugin in $plugin_missing
                 echo ""
                 echo "    "(_name $plugin)
-                if test "$_dry_run" = yes
+                if test "$mode" = report
                     continue
                 end
                 while true
@@ -461,7 +483,7 @@ function _wrangle_detect_drift
             set -a conflicts $name
         end
 
-        if test "$_dry_run" = yes
+        if test "$mode" = report
             if test (count $missing) -gt 0
                 echo "  $GLYPH_DIM import: "(_n (count $missing))" tracked var(s) missing on machine (would silent-apply):"
                 for name in $missing
@@ -532,8 +554,8 @@ function _wrangle_detect_drift
 
     # ─── Sub-pass B: capture (live shell → repo file) ────────────────────────
     # Detection runs unconditionally; mutating actions (prompts + writes +
-    # regenerate) are gated by `$_dry_run` below so `wrangle sync --dry-run`
-    # still surfaces the auto-skipped count + drift summary.
+    # regenerate) are gated on `$mode` below so report mode still surfaces
+    # the auto-skipped count + drift summary.
 
     # Get all current universals, partition into groups by prefix.
     # We need: list of (prefix → [var names]) for untracked + un-ignored vars.
@@ -588,7 +610,7 @@ function _wrangle_detect_drift
     if test $drift_total -eq 0
         echo "  $GLYPH_OK no univ-var drift (allowlist + blocklist cover all)"
     else
-        if test "$_dry_run" = yes
+        if test "$mode" = report
             echo "  $GLYPH_DIM dry run — "(_n $drift_total)" untracked group(s)/var(s) detected, nothing would change:"
         else
             echo "  Found "(_n $drift_total)" untracked group(s)/var(s)"
@@ -609,7 +631,7 @@ function _wrangle_detect_drift
             for m in $members
                 echo "      "(_name $m)
             end
-            if test "$_dry_run" = yes
+            if test "$mode" = report
                 continue
             end
             while true
@@ -646,7 +668,7 @@ function _wrangle_detect_drift
         for name in $drift_standalone
             echo ""
             echo "    standalone (no prefix): "(_name $name)" = "(string join " " $$name)
-            if test "$_dry_run" = yes
+            if test "$mode" = report
                 continue
             end
             while true
@@ -679,7 +701,7 @@ function _wrangle_detect_drift
 
     # Side-effects (file writes, regenerate, dirty-file report) only when NOT in
     # dry-run. Detection above already ran in both modes.
-    if test "$_dry_run" = no
+    if test "$mode" = interactive
         # Regenerate exported file if anything was tracked OR if the file's current
         # contents are stale relative to the live var values.
         if test "$univ_changed" = yes; or test -f $univ_output_file
@@ -753,7 +775,7 @@ function _wrangle_detect_drift
         end
 
         # Ensure Brewfile exists so we can append to it (fresh machine, no Brewfile yet).
-        if test "$_dry_run" = no; and not test -f $brewfile_path
+        if test "$mode" = interactive; and not test -f $brewfile_path
             touch $brewfile_path
         end
 
@@ -762,7 +784,7 @@ function _wrangle_detect_drift
             for entry in $added
                 echo ""
                 echo "    $entry"
-                if test "$_dry_run" = yes
+                if test "$mode" = report
                     continue
                 end
                 while true
@@ -818,7 +840,7 @@ function _wrangle_detect_drift
             for entry in $missing
                 echo ""
                 echo "    $entry"
-                if test "$_dry_run" = yes
+                if test "$mode" = report
                     continue
                 end
                 while true
@@ -897,7 +919,7 @@ function _wrangle_detect_drift
         # Summary: parallel to the other passes — only counts line when work
         # happened; the "Brewfile matches installed state" ok-line above is the
         # no-work summary.
-        if test "$_dry_run" = yes; and test (math (count $added) + (count $missing)) -gt 0
+        if test "$mode" = report; and test (math (count $added) + (count $missing)) -gt 0
             echo "  $GLYPH_DIM dry run — "(_n (count $added))" untracked, "(_n (count $missing))" missing, nothing changed"
         else if test (math $brew_tracked + $brew_ignored + $brew_installed + $brew_removed) -gt 0
             echo "  $GLYPH_OK "(_n $brew_tracked)" tracked, "(_n $brew_ignored)" ignored, "(_n $brew_installed)" installed, "(_n $brew_removed)" removed"

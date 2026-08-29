@@ -1364,9 +1364,8 @@ if test "$_subcmd" = status
     # The mutating passes — yoink, re-stow, commit, doc review, push —
     # simply aren't in this call path, so status is read-only by
     # structure rather than by remembering to gate each one.
-    set -g _dry_run yes
     echo ""
-    _wrangle_detect_drift
+    _wrangle_detect_drift report
     exit 0
 end
 
@@ -1675,10 +1674,16 @@ end
 
 # ─── Passes 5-8: drift detection ─────────────────────────────────────────
 # Dotfiles, fisher plugins, universal variables, brew — the four domains
-# that report drift in both dry-run and interactive mode. The passes live
-# in scripts/_drift.fish (sourced above) so `wrangle status` can run them
-# without running this pipeline; see the header comment there for why.
-_wrangle_detect_drift
+# that report drift in both modes. The passes live in scripts/_drift.fish
+# (sourced above) so `wrangle status` can run them without running this
+# pipeline; see the header comment there for why.
+#
+# --dry-run is a user flag about this run; `report` is the contract the
+# drift unit is being invoked under. Translating here keeps the flag from
+# leaking into the extracted unit as ambient state.
+set -l _drift_mode interactive
+test "$_dry_run" = yes; and set _drift_mode report
+_wrangle_detect_drift $_drift_mode
 
 # ─── Touch timestamp ──────────────────────────────────────────────────────
 if test "$_dry_run" = no
