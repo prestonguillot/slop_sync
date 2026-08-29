@@ -145,7 +145,7 @@ Things that aren't on `main` (they're personal-layer, on your machine-branch): `
 | `wrangle update` | Fetch origin and merge `origin/main` into the current machine-branch (framework updates). On merge conflict, resolve manually + re-run. |
 | `wrangle merge <branch>` | Per-item adoption of personal-layer content from another machine-branch. Walks dotfiles + Brewfile + fish_plugins + univ-vars; prompts `[a]dopt / [k]eep mine / [d]iff / [s]kip / [q]uit` per item. Add-only; honors `.ignore` files; scoped to personal-layer content. |
 | `wrangle push` | Push the current branch to origin, with a preview of what's about to ship. No prompt — typing the subcommand is the decision. |
-| `wrangle status` | Read-only summary. Fetches origin, then reports update-status vs `origin/main`, peer machine-branches with last-updated timestamps, and a `wrangle sync --dry-run` of local drift. Mutates nothing. |
+| `wrangle status` | Read-only summary. Fetches origin, then reports **Update status** (this branch vs `origin/<branch>` — unpushed or unpulled commits), **Framework update** (commits on `origin/main` not yet merged in), peer machine-branches with last-updated timestamps, and a `wrangle sync --dry-run` of local drift. Mutates nothing. |
 | `wrangle review-docs` | Skip drift; have claude review the repo's docs against recent commits. |
 
 Bare `wrangle`, `wrangle -h`, and `wrangle --help` all print top-level help. There's no implicit-sync shortcut — type `wrangle sync` to sync.

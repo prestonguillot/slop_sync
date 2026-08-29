@@ -73,3 +73,34 @@ env HOME=$home2 $fix2/scripts/wrangle sync --dry-run >/dev/null 2>&1
 test -f $home2/.cache/dotfiles/last-wrangle
 @test "sync --dry-run does NOT create last-wrangle stamp" $status -ne 0
 rm -rf $fix2 $home2
+
+# ─── Pass 1 skip causes are reported differently ─────────────────────────
+# The header prints inside each branch, so a skipped pass leaves no empty
+# section. --no-branch-switch is silent (you just typed it); the env var is
+# explained (set once and forgotten, it silently stops framework updates).
+
+set -l f3 (_wrangle_fixture)
+set -l fix3 $f3[1]; set -l home3 $f3[2]
+
+set -l out_flag (env HOME=$home3 $fix3/scripts/wrangle sync --dry-run --no-branch-switch 2>&1 | string join \n)
+string match -q "*Framework update*" -- "$out_flag"
+@test "sync --no-branch-switch prints no Framework update section" $status -ne 0
+
+set -l out_env (env HOME=$home3 WRANGLE_NO_BRANCH_SWITCH=1 $fix3/scripts/wrangle sync --dry-run 2>&1 | string join \n)
+string match -q "*Framework update*" -- "$out_env"
+@test "WRANGLE_NO_BRANCH_SWITCH prints a Framework update section" $status -eq 0
+
+string match -q "*WRANGLE_NO_BRANCH_SWITCH=1 is set in your environment*" -- "$out_env"
+@test "WRANGLE_NO_BRANCH_SWITCH names the variable that caused the skip" $status -eq 0
+
+string match -q "*was not merged into*" -- "$out_env"
+@test "WRANGLE_NO_BRANCH_SWITCH says what did not happen" $status -eq 0
+
+string match -q "*wrangle update*unset the variable*" -- "$out_env"
+@test "WRANGLE_NO_BRANCH_SWITCH says what to do about it" $status -eq 0
+
+set -l out_none (env HOME=$home3 $fix3/scripts/wrangle sync --dry-run 2>&1 | string join \n)
+string match -q "*Framework update*" -- "$out_none"
+@test "sync with no skip flag runs Pass 1 normally" $status -eq 0
+
+rm -rf $fix3 $home3

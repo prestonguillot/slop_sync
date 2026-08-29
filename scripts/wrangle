@@ -75,26 +75,28 @@
 #   3. Helper library sourcing
 #   4. Color + spinner library
 #   5. Early-exit subcommand handlers
-#      5.1 update
-#      5.2 merge
-#      5.3 push
-#      5.4 review-docs
+#      5.1 Framework-update helper
+#      5.2 update
+#      5.3 merge
+#      5.4 push
+#      5.5 review-docs
+#      5.6 status
 #   6. Commit-message builders
-#   7. Framework-update helper
-#   8. Sync pipeline
-#      8.1  Pass 1: framework update
-#      8.2  First-run welcome + claude opt-in
-#      8.3  Pass 2: yoink check
-#      8.4  Pass 3: orphan-symlink check
-#      8.5  Pass 4: re-stow
-#      8.6  Pass 5: dotfile drift
-#      8.7  Pass 6: fisher drift
-#      8.8  Pass 7: univ-var drift
-#      8.9  Pass 8: brew drift
-#      8.10 Pass 9: changelog
-#      8.11 Pass 10: commit
-#      8.12 Pass 11: claude-code doc review
-#      8.13 Pass 12: push
+#   7. Sync pipeline
+#      7.1  Pass 1: framework update
+#      7.2  First-run welcome + claude opt-in
+#      7.3  Pass 2: yoink check
+#      7.4  Pass 3: orphan-symlink check
+#      7.5  Pass 4: re-stow
+#      7.6  Pass 5: dotfile drift
+#      7.7  Pass 6: fisher drift
+#      7.8  Pass 7: univ-var drift
+#      7.9  Pass 8: brew drift
+#      7.10 Touch timestamp
+#      7.11 Pass 9: changelog
+#      7.12 Pass 10: commit
+#      7.13 Pass 11: claude-code doc review
+#      7.14 Pass 12: push
 
 # ─── Preamble + subcommand dispatch ──────────────────────────────────────
 # Shape: `wrangle <subcmd> [<args>...]`. Bare `wrangle`, `wrangle -h`, and
@@ -1246,9 +1248,15 @@ Recent commit history (last 15 commits):
 end
 
 # ─── status ──────────────────────────────────────────────────────────────
-# `wrangle status` — read-only diagnostic. Fetches origin once so the
-# update-check and peer-branch listing both reflect remote truth, then runs
-# a dry-run sync to surface local drift. Mutates no local refs.
+# `wrangle status` — read-only diagnostic. Fetches origin once so every
+# section below reflects remote truth, then runs a dry-run sync to surface
+# local drift. Mutates no local refs.
+#
+# Reports two independent comparisons, in this order:
+#   Update status     origin/$current ↔ $current   → wrangle push / git pull
+#   Framework update  origin/main    → $current    → wrangle update
+# They answer different questions and have different remedies, so they get
+# separate sections. Peer machine-branches follows, then the drift dry-run.
 if test "$_subcmd" = status
     _header "Status"
     pushd $repo >/dev/null
@@ -1257,18 +1265,56 @@ if test "$_subcmd" = status
 
     set -l current (git rev-parse --abbrev-ref HEAD)
 
-    # ── Update status (vs origin/main) ────────────────────────────────
+    # ── Update status (this branch vs its own remote) ─────────────────
+    # Ahead/behind against origin/$current alone. This is the push/pull
+    # question. Whether trunk has work you haven't merged is a separate
+    # question with a separate remedy — reported under Framework update
+    # below. Same axes the shell-start nags report
+    # (home/.config/fish/conf.d/wrangle_integration.fish).
     echo ""
     _subheader "Update status"
+    if not git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1
+        echo "    $GLYPH_DIM "(_name $current)" has no upstream yet — "(_name "wrangle push")" will set one."
+    else
+        set -l ahead (git rev-list --count '@{u}..HEAD' 2>/dev/null)
+        set -l behind (git rev-list --count 'HEAD..@{u}' 2>/dev/null)
+        test -z "$ahead";  and set ahead 0
+        test -z "$behind"; and set behind 0
+        if test "$ahead" -eq 0; and test "$behind" -eq 0
+            echo "    $GLYPH_OK "(_name $current)" in sync with "(_name "origin/$current")
+        end
+        if test "$ahead" -gt 0
+            echo "    "(_n $ahead)" commit(s) on "(_name $current)" not yet on "(_name "origin/$current")":"
+            git --no-pager log --color=always \
+                --pretty='      %C(yellow)%h%Creset %s %C(dim)(%cr)%Creset' \
+                '@{u}..HEAD'
+            echo ""
+            echo "    Run "(_name "wrangle push")" to push them."
+        end
+        if test "$behind" -gt 0
+            echo "    "(_n $behind)" commit(s) on "(_name "origin/$current")" not yet in "(_name $current)":"
+            git --no-pager log --color=always \
+                --pretty='      %C(yellow)%h%Creset %s %C(dim)(%cr)%Creset' \
+                'HEAD..@{u}'
+            echo ""
+            echo "    Run "(_name "git pull")" to bring them in."
+        end
+    end
+
+    # ── Framework update (trunk → this branch) ────────────────────────
+    # Commits on origin/main not yet merged into this machine-branch.
+    # `wrangle update` performs the merge; status only reports it.
+    echo ""
+    _subheader "Framework update"
     if not git rev-parse --verify --quiet origin/main >/dev/null
         echo "    $GLYPH_DIM no origin/main on this remote; nothing to update from"
     else
-        set -l ahead (git rev-list --count "$current..origin/main" 2>/dev/null)
-        test -z "$ahead"; and set ahead 0
-        if test "$ahead" -eq 0
+        set -l behind_main (git rev-list --count "$current..origin/main" 2>/dev/null)
+        test -z "$behind_main"; and set behind_main 0
+        if test "$behind_main" -eq 0
             echo "    $GLYPH_OK "(_name $current)" up to date with "(_name origin/main)
         else
-            echo "    "(_n $ahead)" commit(s) on "(_name origin/main)" not yet in "(_name $current)":"
+            echo "    "(_n $behind_main)" commit(s) on "(_name origin/main)" not yet in "(_name $current)":"
             git --no-pager log --color=always \
                 --pretty='      %C(yellow)%h%Creset %s %C(dim)(%cr)%Creset' \
                 "$current..origin/main"
@@ -1307,8 +1353,10 @@ if test "$_subcmd" = status
 
     # ── Sync dry-run ──────────────────────────────────────────────────
     # Re-exec ourselves with `sync --dry-run --no-branch-switch`. The
-    # `--no-branch-switch` skips Pass 1 (framework update) because we
-    # already reported its outcome above and don't want to fetch twice.
+    # `--no-branch-switch` skips Pass 1 (framework update): status owns
+    # that report itself above, and Pass 1 would fetch a second time.
+    # Passing the flag makes Pass 1 print nothing at all, so no empty
+    # section lands in the middle of status output.
     echo ""
     fish $script_dir/wrangle sync --dry-run --no-branch-switch
     exit $status
@@ -1383,8 +1431,24 @@ end
 # Skip with --no-branch-switch / WRANGLE_NO_BRANCH_SWITCH=1.
 # In --dry-run mode the switch is reported but not performed — dry-run
 # must have no side effects, including no checkout.
-_header "Framework update"
-if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
+#
+# The header prints inside each branch, not above them, so a skipped pass
+# leaves no empty section behind. The two skip causes are reported
+# differently on purpose:
+#   --no-branch-switch        → silent. You typed the flag a second ago;
+#                               echoing it back says nothing you don't know.
+#   WRANGLE_NO_BRANCH_SWITCH  → explained. An exported var set once and
+#                               forgotten otherwise lets the machine-branch
+#                               drift behind main with no visible reason.
+if set -q _flag_no_branch_switch
+    # Explicitly requested for this run — nothing to report.
+else if test -n "$WRANGLE_NO_BRANCH_SWITCH"
+    _header "Framework update"
+    set -l machine_branch (_wrangle_machine_branch $repo)
+    echo "  $GLYPH_WARN WRANGLE_NO_BRANCH_SWITCH=1 is set in your environment — "(_name origin/main)" was not merged into "(_name $machine_branch)"."
+    echo "  Run "(_name "wrangle update")" to merge it now, or unset the variable."
+else
+    _header "Framework update"
     pushd $repo >/dev/null
 
     set -l machine_branch (_wrangle_machine_branch $repo)
@@ -1415,8 +1479,6 @@ if not set -q _flag_no_branch_switch; and test -z "$WRANGLE_NO_BRANCH_SWITCH"
     else
         echo "  $GLYPH_DIM dry run — would fetch origin and merge origin/main into "(_name $machine_branch)
     end
-else
-    echo "  $GLYPH_DIM skipped (WRANGLE_NO_BRANCH_SWITCH set or --no-branch-switch passed)"
 end
 
 
