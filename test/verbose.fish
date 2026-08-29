@@ -23,6 +23,7 @@ function _wrangle_verbose_fixture --inherit-variable repo_root
     cp $repo_root/scripts/_univ_parse.fish $fix/scripts/
     cp $repo_root/scripts/_univ_helpers.fish $fix/scripts/
     cp $repo_root/scripts/_commit_msg.fish $fix/scripts/
+    cp $repo_root/scripts/_drift.fish $fix/scripts/
     cp $repo_root/scripts/scan-secrets $fix/scripts/
     cp $repo_root/scripts/dump-brewfile $fix/scripts/
 
