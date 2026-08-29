@@ -342,7 +342,6 @@ set -l changelog_file $repo/.wrangle-changelog
 set -l cache_dir ~/.cache/dotfiles
 set -l last_run_stamp $cache_dir/last-wrangle
 set -l config_file $cache_dir/wrangle-config
-set -l pull_nag_state $cache_dir/pull-nag-state
 
 mkdir -p $cache_dir
 
@@ -362,6 +361,7 @@ source $repo/scripts/_univ_parse.fish    # exported-univ-vars.fish parser
 source $repo/scripts/_univ_helpers.fish  # _univ_prefix for capture sub-pass grouping
 source $repo/scripts/_commit_msg.fish    # commit-message builder (plain path)
 source $repo/scripts/_drift.fish         # _wrangle_detect_drift — Passes 5-8
+source $repo/scripts/_nag_state.fish     # pull-nag state file format + path
 
 # Return the configured machine-branch for this clone, defaulting to `personal`.
 # Inlined (used to live in scripts/_chain.fish, but that file's other helpers
@@ -373,14 +373,14 @@ function _wrangle_machine_branch --argument-names repo_path
 end
 
 # Record that origin/main was successfully merged so the shell-start pull
-# nag stops re-firing until origin/main next moves. Single-line state file
-# now (no per-parent tracking; only main matters under the peer model).
-function _wrangle_record_main_nag --argument-names path repo_path
+# nag stops re-firing until origin/main next moves. The file's format and
+# location belong to scripts/_nag_state.fish, which the shell integration
+# sources too — this used to be hardcoded on both sides.
+function _wrangle_record_main_nag --argument-names repo_path
     # `--verify` is load-bearing: without it, `git rev-parse origin/missing`
     # echoes the literal ref to stdout (exit 128) and we'd write a bogus SHA.
     set -l sha (git -C $repo_path rev-parse --verify origin/main 2>/dev/null)
-    test -z "$sha"; and return
-    echo "main:$sha" > $path
+    _wrangle_nag_state_write $sha
 end
 
 # ─── Color + spinner library ─────────────────────────────────────────────
@@ -632,7 +632,7 @@ end
 #
 # Returns: 0 on success (whether or not there were commits to merge),
 #          1 on merge conflict.
-function _wrangle_update --inherit-variable repo --inherit-variable pull_nag_state
+function _wrangle_update --inherit-variable repo
     pushd $repo >/dev/null
 
     _with_spinner "Fetching origin…" git fetch origin --prune 2>/dev/null
@@ -675,7 +675,7 @@ function _wrangle_update --inherit-variable repo --inherit-variable pull_nag_sta
     end
 
     echo "  $GLYPH_OK merged "(_n $ahead)" commit(s) from "(_name origin/main)" into "(_name $current)
-    _wrangle_record_main_nag $pull_nag_state $repo
+    _wrangle_record_main_nag $repo
 
     popd >/dev/null
     return 0

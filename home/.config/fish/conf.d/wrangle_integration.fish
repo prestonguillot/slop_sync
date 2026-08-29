@@ -59,8 +59,9 @@ end
 # slow every shell start). Wrangle fetches at the start of every sync run,
 # so the nag tracks how stale things are between runs.
 #
-# Only nags once per unique origin/main SHA (cached at
-# ~/.cache/dotfiles/pull-nag-state, single-line `main:<sha>` format).
+# Only nags once per unique origin/main SHA. The cache file's path and
+# format are owned by scripts/_nag_state.fish — wrangle writes it too,
+# after a successful merge, and the two must agree.
 if status is-interactive; and test -z "$WRANGLE_NO_PULL_NAG"; and test -d $_dotfiles_repo/.git
     set -l _mb (command git -C $_dotfiles_repo config wrangle.machine-branch 2>/dev/null)
     test -z "$_mb"; and set _mb personal
@@ -70,9 +71,12 @@ if status is-interactive; and test -z "$WRANGLE_NO_PULL_NAG"; and test -d $_dotf
         set -l _ahead (command git -C $_dotfiles_repo rev-list --count "$_mb..origin/main" 2>/dev/null)
         if test -n "$_ahead"; and test "$_ahead" -gt 0
             set -l _sha (command git -C $_dotfiles_repo rev-parse origin/main 2>/dev/null)
-            set -l _state_file ~/.cache/dotfiles/pull-nag-state
-            set -l _cached ""
-            test -f $_state_file; and set _cached (grep "^main:" $_state_file 2>/dev/null | head -1 | string replace "main:" '')
+            # State-file format and path live in scripts/_nag_state.fish so
+            # this side and wrangle's writer can't drift apart. Sourced
+            # here, inside the is-interactive branch, rather than at the top
+            # of the file — shells that never nag never pay for it.
+            source $_dotfiles_repo/scripts/_nag_state.fish
+            set -l _cached (_wrangle_nag_state_read)
 
             if test "$_cached" != "$_sha"
                 # Pluralize manually. `commit(s)` unquoted is a command
@@ -82,8 +86,7 @@ if status is-interactive; and test -z "$WRANGLE_NO_PULL_NAG"; and test -d $_dotf
                 echo (__wrangle_nag_tag)" framework updates pending. Run "(__wrangle_nag_action 'wrangle update')"."
                 echo "  "(__wrangle_nag_name main)" → "(__wrangle_nag_name $_mb)": "(__wrangle_nag_count "$_ahead")" $_commit_word"
                 # Record so subsequent shells don't re-nag until origin/main moves.
-                mkdir -p (dirname $_state_file)
-                echo "main:$_sha" > $_state_file
+                _wrangle_nag_state_write $_sha
             end
         end
     end
