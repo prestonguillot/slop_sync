@@ -112,8 +112,15 @@ scripts/
   scan-secrets   Fish. Pre-commit safety net for high-confidence secret patterns.
   bump-version   Bash. Semver-tags main. Called by the release workflow, rarely manually.
   run-tests      Bash. Wraps fishtape over test/*.fish.
+  _*.fish        Fish. Units sourced by wrangle, split out so more than one
+                 subcommand (and the tests) can use them: _skiplist (ignore-file
+                 parsing), _univ_parse / _univ_helpers (universals), _commit_msg
+                 (commit messages), _drift (Passes 5-8, shared by `sync` and
+                 `status`), _nag_state (pull-nag state file format).
 
 test/            Fishtape tests covering wrangle CLI surface, scan-secrets, dump-brewfile, bump-version.
+  helpers/       Shared fixture construction. Not collected by `fishtape test/*.fish`
+                 (that glob doesn't recurse), so it's sourceable without being run.
 
 .github/workflows/
   test.yml       Runs the test suite on every push/PR.
@@ -145,7 +152,7 @@ Things that aren't on `main` (they're personal-layer, on your machine-branch): `
 | `wrangle update` | Fetch origin and merge `origin/main` into the current machine-branch (framework updates). On merge conflict, resolve manually + re-run. |
 | `wrangle merge <branch>` | Per-item adoption of personal-layer content from another machine-branch. Walks dotfiles + Brewfile + fish_plugins + univ-vars; prompts `[a]dopt / [k]eep mine / [d]iff / [s]kip / [q]uit` per item. Add-only; honors `.ignore` files; scoped to personal-layer content. |
 | `wrangle push` | Push the current branch to origin, with a preview of what's about to ship. No prompt — typing the subcommand is the decision. |
-| `wrangle status` | Read-only summary. Fetches origin, then reports update-status vs `origin/main`, peer machine-branches with last-updated timestamps, and a `wrangle sync --dry-run` of local drift. Mutates nothing. |
+| `wrangle status` | Read-only summary. Fetches origin, then reports **Update status** (this branch vs `origin/<branch>` — unpushed or unpulled commits), **Framework update** (commits on `origin/main` not yet merged in), peer machine-branches with last-updated timestamps, and a `wrangle sync --dry-run` of local drift. Mutates nothing. |
 | `wrangle review-docs` | Skip drift; have claude review the repo's docs against recent commits. |
 
 Bare `wrangle`, `wrangle -h`, and `wrangle --help` all print top-level help. There's no implicit-sync shortcut — type `wrangle sync` to sync.

@@ -7,6 +7,7 @@
 # both the repo and state files are isolated from the developer's tree.
 
 set -l repo_root (dirname (realpath (status -f)))/..
+source $repo_root/test/helpers/fixture.fish
 
 # Build a fixture with two branches:
 #   personal: minimal seed (empty Brewfile, empty fish_plugins, no dotfiles)
@@ -17,22 +18,11 @@ function _wrangle_merge_fixture --inherit-variable repo_root
     set -l fix (mktemp -d)
     set -l home_dir (mktemp -d)
 
-    git -C $fix init -q -b main
-    git -C $fix config user.email test@test.local
-    git -C $fix config user.name "merge-test"
-
-    mkdir -p $fix/scripts $fix/home/.config/fish/conf.d
-    cp $repo_root/scripts/wrangle $fix/scripts/
-    cp $repo_root/scripts/_skiplist.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_parse.fish $fix/scripts/
-    cp $repo_root/scripts/_univ_helpers.fish $fix/scripts/
-    cp $repo_root/scripts/_commit_msg.fish $fix/scripts/
-    cp $repo_root/scripts/scan-secrets $fix/scripts/
-    cp $repo_root/scripts/dump-brewfile $fix/scripts/
-
-    # Minimal seed on what becomes main.
-    touch $fix/.dotignore $fix/.brewignore $fix/.fisherignore $fix/.univexport $fix/.univignore
-    touch $fix/Brewfile $fix/home/.config/fish/fish_plugins $fix/home/.config/fish/conf.d/.gitkeep
+    _wrangle_fixture_init_repo $fix "merge-test" main
+    _wrangle_fixture_install_scripts $fix $repo_root
+    # Minimal seed on what becomes main: blank ignore files, so nothing the
+    # branches diverge on gets silently filtered.
+    _wrangle_fixture_seed_files $fix $repo_root empty
 
     git -C $fix add -A
     git -C $fix commit -q -m "seed"
