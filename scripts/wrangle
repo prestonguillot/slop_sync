@@ -362,6 +362,7 @@ source $repo/scripts/_univ_helpers.fish  # _univ_prefix for capture sub-pass gro
 source $repo/scripts/_commit_msg.fish    # commit-message builder (plain path)
 source $repo/scripts/_drift.fish         # _wrangle_detect_drift — Passes 5-8
 source $repo/scripts/_nag_state.fish     # pull-nag state file format + path
+source $repo/scripts/_stow_guard.fish    # unstowable-path detection + stow runner
 
 # Return the configured machine-branch for this clone, defaulting to `personal`.
 # Inlined (used to live in scripts/_chain.fish, but that file's other helpers
