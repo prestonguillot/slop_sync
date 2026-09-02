@@ -147,6 +147,23 @@ function _wrangle_stow_hazard_why --argument-names kind indent
     end
 end
 
+# A full hazard list, rendered: every offending path, then one explanation
+# per distinct kind (so a directory holding six bad symlinks explains itself
+# once, not six times). Takes the indent first, then the hazard lines as
+# produced by _wrangle_stow_hazards.
+function _wrangle_stow_hazard_report --argument-names indent
+    set -l hazards $argv[2..-1]
+    set -l kinds
+    for h in $hazards
+        set -l parts (string split \t -- $h)
+        _wrangle_stow_hazard_explain $parts[1] $parts[2] $parts[3] $indent
+        contains -- $parts[1] $kinds; or set -a kinds $parts[1]
+    end
+    for k in $kinds
+        _wrangle_stow_hazard_why $k $indent
+    end
+end
+
 # ─── Running stow ────────────────────────────────────────────────────────
 
 # Every re-stow in wrangle goes through here, so the flags live in one place
