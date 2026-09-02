@@ -19,6 +19,12 @@
 # So the rule is: find the paths stow can't take BEFORE moving anything, and
 # report them instead of touching them. What stow rejects at plan time, this
 # file rejects at enumeration time, with the same verdict and a better message.
+#
+# The absolute-symlink refusal arrived in stow 2.4.0. Older stow (2.3.1 is
+# still what Debian and Ubuntu ship) stows one without complaint, which is
+# worse rather than better: you get a link in ~ that stow itself will refuse
+# to remove later. The checks here are deliberately version-independent —
+# these paths do not belong in a stow package on any version.
 
 # ─── Hazard scanning ─────────────────────────────────────────────────────
 

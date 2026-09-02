@@ -172,11 +172,22 @@ string match -q '*cannot read directory*' -- "$raw"
 # root is given in resolved form, which is exactly that mismatch.
 
 set -l sh2 (mktemp -d)
-set -l srepo (mktemp -d)
-mkdir -p $srepo/home/.config $sh2/.config
-ln -s $srepo/home/.config/gone $sh2/.config/orphan
+set -l sbase (mktemp -d)
 
+# Build the symlinked ancestor explicitly rather than relying on the platform.
+# macOS mktemp returns /var/... (itself a symlink to /private/var), so this
+# shape occurred for free there — but Linux mktemp returns a real /tmp path,
+# and the mismatch this test exists to cover never arose.
+mkdir -p $sbase/real/home/.config
+ln -s $sbase/real $sbase/link
+set -l srepo $sbase/link
+mkdir -p $sh2/.config
+
+# The link is written through the symlinked path...
+ln -s $srepo/home/.config/gone $sh2/.config/orphan
+# ...and the repo root is given in resolved form. That is the mismatch.
 set -l srepo_real (realpath $srepo)
+
 test "$srepo_real" != "$srepo"
 @test "fixture actually exercises a symlinked ancestor" $status -eq 0
 
@@ -189,4 +200,4 @@ end
 test (count $found) -eq 1
 @test "orphan scan matches across a symlinked ancestor" $status -eq 0
 
-rm -rf $sh2 $srepo
+rm -rf $sh2 $sbase

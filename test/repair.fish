@@ -43,10 +43,31 @@ function _repair_fixture --inherit-variable repo_root
     echo $home_dir
 end
 
+# Does this stow refuse to store an absolute symlink?
+#
+# The refusal landed in stow 2.4.0; 2.3.1 (what Ubuntu ships, and so what CI
+# runs) stows one happily — producing a link in ~ that stow can never remove
+# again. wrangle's pre-flight refuses these on every version, because they are
+# a bad idea on every version, but only a stow that refuses can put a machine
+# into the state the next block establishes. So that block is gated, and the
+# recovery tests below are not: they hold regardless.
+function _stow_refuses_abs_symlinks
+    set -l d (mktemp -d)
+    mkdir -p $d/pkg/sub $d/target
+    ln -s /var/tmp $d/pkg/sub/abs
+    set -l refused 0
+    if stow --no-folding -t $d/target -d $d -n pkg >/dev/null 2>&1
+        set refused 1
+    end
+    rm -rf $d
+    return $refused
+end
+
 # ─── The broken state is real ────────────────────────────────────────────
 # Establish that sync genuinely cannot proceed, so the recovery below is
 # recovering something rather than passing vacuously.
 
+if _stow_refuses_abs_symlinks
 set -l f0 (_repair_fixture)
 set -l fix0 $f0[1]; set -l home0 $f0[2]
 
@@ -68,6 +89,7 @@ not test -e $home0/.config/mc/hotlist
 @test "stranded file is not linked into ~ before repair" $status -eq 0
 
 rm -rf $fix0 $home0
+end
 
 # ─── repair --dry-run changes nothing ────────────────────────────────────
 
