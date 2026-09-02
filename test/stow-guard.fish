@@ -162,3 +162,31 @@ string match -q '*brand new conflict*' -- "$passthru"
 set -l raw (_wrangle_stow_explain_failure "" "stow: cannot read directory" | string join \n)
 string match -q '*cannot read directory*' -- "$raw"
 @test "non-conflict stow error text is not lost" $status -eq 0
+
+# ─── Orphan detection survives symlinked ancestry ────────────────────────
+# The two sides of the comparison come from different roots: the link is
+# resolved against $HOME, home/ comes from `git rev-parse --show-toplevel`.
+# Either can sit under a symlinked ancestor — /var -> /private/var on macOS,
+# or a symlinked home or checkout — and a purely lexical compare then never
+# matches. Here the link is written through the unresolved path and the repo
+# root is given in resolved form, which is exactly that mismatch.
+
+set -l sh2 (mktemp -d)
+set -l srepo (mktemp -d)
+mkdir -p $srepo/home/.config $sh2/.config
+ln -s $srepo/home/.config/gone $sh2/.config/orphan
+
+set -l srepo_real (realpath $srepo)
+test "$srepo_real" != "$srepo"
+@test "fixture actually exercises a symlinked ancestor" $status -eq 0
+
+set -l found
+begin
+    set -lx HOME $sh2
+    set found (_wrangle_orphan_symlinks $srepo_real/home)
+end
+
+test (count $found) -eq 1
+@test "orphan scan matches across a symlinked ancestor" $status -eq 0
+
+rm -rf $sh2 $srepo

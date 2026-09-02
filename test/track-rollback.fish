@@ -239,3 +239,66 @@ grep -q 'moved to home/.config/ordinary' $home4/run.log
 @test "success: the track is reported" $status -eq 0
 
 rm -rf $fix4 $home4 $stub4
+
+# ─── Pass 4 names the real cause ─────────────────────────────────────────
+# This is the gate a machine with an already-broken home/ hits on every run,
+# so it is the message that has to explain the situation. It used to say
+# "resolve conflicts (real files at target paths)" — one of several things
+# stow refuses, and not the one that actually breaks people — and named no
+# path at all.
+
+set -l f5 (_track_fixture)
+set -l fix5 $f5[1]; set -l home5 $f5[2]; set -l stub5 $f5[3]
+_stow_stub $stub5 1   # fail the very first stow: Pass 4 itself
+
+set -l rv5
+begin
+    set -lx HOME $home5
+    set -lx PATH $stub5 $PATH
+    env WRANGLE_NO_BRANCH_SWITCH=1 $fix5/scripts/wrangle sync >$home5/run.log 2>&1
+    set rv5 $status
+end
+
+@test "Pass 4 stow failure exits non-zero" $rv5 -ne 0
+
+grep -q 'STOW REFUSED' $home5/run.log
+@test "Pass 4 stow failure is reported loudly" $status -eq 0
+
+grep -q 'blocker' $home5/run.log
+@test "Pass 4 stow failure names the path stow complained about" $status -eq 0
+
+grep -q 'wrangle repair' $home5/run.log
+@test "Pass 4 stow failure points at wrangle repair" $status -eq 0
+
+not grep -q 'real files at target paths' $home5/run.log
+@test "Pass 4 no longer blames 'real files at target paths'" $status -eq 0
+
+rm -rf $fix5 $home5 $stub5
+
+# ─── Pass 3 finds dangling symlinks ──────────────────────────────────────
+# The detection ran realpath on links it had already established were broken.
+# BSD realpath exits 1 without output on those, so the prefix match always
+# failed and the pass matched nothing — including the exact dangling links a
+# half-finished track leaves behind.
+
+set -l f6 (_track_fixture)
+set -l fix6 $f6[1]; set -l home6 $f6[2]; set -l stub6 $f6[3]
+_stow_stub $stub6 0
+
+# A symlink into the repo's home/ whose target does not exist.
+ln -s $fix6/home/.config/vanished $home6/.config/dangling
+
+begin
+    set -lx HOME $home6
+    set -lx PATH $stub6 $PATH
+    printf 's\n' | env WRANGLE_NO_BRANCH_SWITCH=1 $fix6/scripts/wrangle sync \
+        >$home6/run.log 2>&1
+end
+
+grep -q 'Orphan symlinks' $home6/run.log
+@test "orphan pass reports a dangling link into home/" $status -eq 0
+
+grep -q 'dangling' $home6/run.log
+@test "orphan pass names the dangling link" $status -eq 0
+
+rm -rf $fix6 $home6 $stub6

@@ -48,6 +48,29 @@ function _wrangle_lexical_normalize --argument-names path
     end
 end
 
+# Canonical form of a path that may not fully exist: realpath it if it does,
+# otherwise realpath its parent and re-attach the last component. Falls back
+# to the lexical form when neither resolves.
+#
+# Needed because the two sides of the orphan comparison are built from
+# different roots — the link is resolved against $HOME, while home/ comes from
+# `git rev-parse --show-toplevel` — and either can sit under a symlinked
+# ancestor (/var -> /private/var on macOS, or a symlinked home or checkout).
+# A purely lexical compare then never matches.
+function _wrangle_canonical --argument-names path
+    set -l direct (realpath $path 2>/dev/null)
+    if test -n "$direct"
+        echo $direct
+        return 0
+    end
+    set -l parent (realpath (dirname $path) 2>/dev/null)
+    if test -n "$parent"
+        echo $parent/(basename $path)
+        return 0
+    end
+    _wrangle_lexical_normalize $path
+end
+
 # Does a relative symlink resolve outside the tree being tracked? Compared
 # lexically against the root, for the same reason as above.
 function _wrangle_symlink_escapes --argument-names root link target
@@ -86,10 +109,16 @@ end
 # find does not follow symlinks by default: a symlinked directory is reported
 # as a link and not descended into, which is what we want — the link itself is
 # the hazard, not whatever is on the far side of it.
+#
+# `! -type f ! -type d` makes find return ONLY the candidates for a hazard —
+# symlinks, sockets, fifos, devices. Everything else is filtered in C before
+# it reaches fish. This matters now that top-level dotfiles are in scope: a
+# tree like ~/.m2 can hold six figures of regular files, and materializing
+# all of them into a fish list to check each one would be needlessly slow.
 function _wrangle_stow_hazards --argument-names root
     test -e $root; or test -L $root; or return 0
 
-    for p in (find $root 2>/dev/null)
+    for p in (find $root ! -type f ! -type d 2>/dev/null)
         # -L first: -f and -d follow symlinks and would misreport them.
         if test -L $p
             set -l target (readlink $p)
@@ -98,7 +127,7 @@ function _wrangle_stow_hazards --argument-names root
             else if _wrangle_symlink_escapes $root $p $target
                 printf '%s\t%s\t%s\n' escaping-symlink $p $target
             end
-        else if not test -f $p; and not test -d $p
+        else
             printf '%s\t%s\t%s\n' special $p (_wrangle_stow_file_kind $p)
         end
     end
@@ -240,7 +269,20 @@ end
 # empty, the prefix match always failed, and the pass matched nothing.
 # readlink reads the link text without resolving it, which is what this needs.
 function _wrangle_orphan_symlinks --argument-names home_subdir
-    for f in $HOME/.[A-Za-z0-9]* $HOME/.config/* $HOME/.config/fish/conf.d/* $HOME/.config/fish/functions/*
+    # fish has no bracket globs: the old `$HOME/.[A-Za-z0-9]*` matched
+    # literally nothing, so top-level dotfiles were never scanned here either.
+    set -l scan
+    for f in $HOME/.*
+        string match -qr '^\.[A-Za-z0-9]' -- (string replace -- $HOME/ "" $f); or continue
+        set -a scan $f
+    end
+    for f in $HOME/.config/* $HOME/.config/fish/conf.d/* $HOME/.config/fish/functions/*
+        set -a scan $f
+    end
+
+    set -l root_canon (_wrangle_canonical $home_subdir)
+
+    for f in $scan
         test -L $f; or continue
         # Broken? test -e follows the link, so this is false when the target
         # is missing — which is the whole population we care about.
@@ -255,7 +297,13 @@ function _wrangle_orphan_symlinks --argument-names home_subdir
         else
             set resolved (_wrangle_lexical_normalize (dirname $f)/$target)
         end
-        string match -q "$home_subdir/*" -- $resolved; or continue
+        # Compare canonical forms: the link resolves against $HOME while
+        # home_subdir comes from git, and either can sit under a symlinked
+        # ancestor. Keep the lexical compare too, for the case where neither
+        # side resolves at all.
+        if not string match -q "$home_subdir/*" -- $resolved
+            string match -q "$root_canon/*" -- (_wrangle_canonical $resolved); or continue
+        end
         echo $f
     end
 end
