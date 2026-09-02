@@ -135,9 +135,23 @@ end
 
 # ─── Hazard reporting ────────────────────────────────────────────────────
 
-# Shorten $HOME to ~ for display. Cosmetic only.
+# Render a path the way the rest of wrangle refers to it: paths inside the
+# repo's package as `home/...`, paths in the user's home as `~/...`. Cosmetic
+# only, but these messages are read by someone whose home directory is broken,
+# so an absolute path four levels deep is exactly the wrong thing to show them.
 function _wrangle_tilde --argument-names path
+    if test -n "$home_subdir"; and string match -q "$home_subdir/*" -- $path
+        string replace -- "$home_subdir/" 'home/' $path
+        return 0
+    end
     string replace -- "$HOME/" '~/' $path
+end
+
+# Same, for a path as stow printed it. stow reports package paths relative to
+# its own working directory ("../repo/home/.config/…"), which is meaningless
+# to the reader; the package name is the reliable anchor.
+function _wrangle_stow_path --argument-names path
+    string replace -r '^.*/home/' 'home/' -- $path
 end
 
 # One hazard, rendered as human text at the given indent. Single owner for
@@ -188,7 +202,11 @@ function _wrangle_stow_hazard_report --argument-names indent
         _wrangle_stow_hazard_explain $parts[1] $parts[2] $parts[3] $indent
         contains -- $parts[1] $kinds; or set -a kinds $parts[1]
     end
+    # Blank line between the list of offending paths and the explanations,
+    # and between each explanation — without it the whole block reads as one
+    # undifferentiated wall.
     for k in $kinds
+        echo ""
         _wrangle_stow_hazard_why $k $indent
     end
 end
@@ -231,7 +249,7 @@ function _wrangle_stow_explain_failure --argument-names indent
         set found yes
 
         if set -l m (string match -r '^source is an absolute symlink (.+) => (.+)$' -- $msg)
-            echo "$indent"(_name (_wrangle_tilde $m[2]))" is a symlink to an absolute path"
+            echo "$indent"(_name (_wrangle_stow_path $m[2]))" is a symlink to an absolute path"
             echo "$indent  $GLYPH_ARROW "(_name $m[3])
             echo "$indent  stow will not store it, and it blocks every other file in home/."
         else if set -l m (string match -r '^existing target is not owned by stow: (.+)$' -- $msg)
