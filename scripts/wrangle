@@ -1152,7 +1152,24 @@ if test "$_subcmd" = merge
     # ── Post-merge: re-stow if any new dotfiles, regenerate univ-vars file if changed ──
     if test "$_merge_need_restow" = yes; and command -q stow
         echo ""
-        _with_spinner "Re-stowing home/ into ~…" stow --no-folding -R -t ~ home
+        # The status used to be discarded entirely, and the merge went on to
+        # git add -A and commit — so a failed stow was invisible and the
+        # adopted dotfiles were committed without ever being linked into ~.
+        #
+        # Unlike the track path, nothing here came out of ~: the adopted files
+        # arrived from the source branch. The repo state is legitimate and
+        # worth committing, so this reports and continues rather than aborting.
+        _wrangle_stow_run "Re-stowing home/ into ~…" $repo
+        or begin
+            echo ""
+            echo "$GLYPH_ERR STOW REFUSED — the adopted files are NOT linked into ~:"
+            _wrangle_stow_explain_failure "    " $_wrangle_stow_err
+            echo ""
+            echo "  The merge itself is fine and will still be committed — the files"
+            echo "  are in "(_name home/)", they just have no symlinks in ~ yet."
+            echo "  Run "(_name "wrangle repair")" to fix the package, then "(_name "wrangle sync")"."
+            echo ""
+        end
     end
 
     if test $_merge_univ_adopted -gt 0
@@ -1615,19 +1632,16 @@ end
 # home/ directly without unstowing first). `stow -R` leaves these behind.
 # Find and clean them up before Pass 4 (re-stow) so subsequent installs
 # don't trip over "conflicting file" errors.
+#
+# Detection lives in scripts/_stow_guard.fish, shared with `wrangle repair`.
+# The version that used to be inline here could not match anything: it ran
+# each candidate through realpath to decide whether it pointed into the repo,
+# but it only ever examined links it had already established were broken, and
+# BSD realpath (macOS) exits 1 without output on a path that does not resolve.
+# $tgt was always empty, so the prefix match always failed.
 set -l orphan_symlinks
 if test "$_dry_run" = no
-    # Scan top-level ~/.<name> and ~/.config/* paths.
-    for f in $HOME/.[A-Za-z0-9]* $HOME/.config/* $HOME/.config/fish/conf.d/* $HOME/.config/fish/functions/*
-        # Only consider symlinks
-        test -L $f; or continue
-        # Only consider symlinks pointing into this repo's home/
-        set -l tgt (realpath $f 2>/dev/null)
-        string match -q "$home_subdir/*" -- $tgt; or continue
-        # Broken? (target doesn't resolve to an existing file)
-        test -e $f; and continue  # `test -e` follows symlinks; false if target missing
-        set -a orphan_symlinks $f
-    end
+    set orphan_symlinks (_wrangle_orphan_symlinks $home_subdir)
 end
 
 if test (count $orphan_symlinks) -gt 0
@@ -1660,17 +1674,24 @@ end
 # ─── Pass 4: re-stow ─────────────────────────────────────────────────────
 if command -q stow
     if test "$_dry_run" = no
-        pushd $repo >/dev/null
-        _with_spinner "Re-stowing home/ into ~…" stow --no-folding -R -t ~ home
+        _wrangle_stow_run "Re-stowing home/ into ~…" $repo
         or begin
-            popd >/dev/null
-            echo "$GLYPH_ERR stow re-stow failed. Resolve conflicts (real files at target paths) and re-run."
+            # This is the gate a machine with an already-broken home/ hits on
+            # every run, so it has to name the actual cause. It used to say
+            # "resolve conflicts (real files at target paths)", which is only
+            # one of the several things stow refuses, and named no path at all.
+            echo ""
+            echo "$GLYPH_ERR STOW REFUSED — home/ could not be linked into ~:"
+            _wrangle_stow_explain_failure "    " $_wrangle_stow_err
+            echo ""
+            echo "  Nothing was changed. home/ is a single stow package, so one"
+            echo "  bad path blocks every file in it."
+            echo "  Run "(_name "wrangle repair")" to find and fix it."
             exit 1
         end
-        popd >/dev/null
     end
 else
-    echo "$GLYPH_WARN  stow not installed; skipping re-stow."
+    echo "$GLYPH_WARN stow not installed; skipping re-stow."
 end
 
 # ─── Passes 5-8: drift detection ─────────────────────────────────────────
